@@ -29,7 +29,12 @@ chmod +x "$WORK/scripts/postinstall"
 
 # Replace an installed copy in place instead of relocating to wherever one is found.
 pkgbuild --analyze --root "$WORK/root" "$WORK/components.plist" >/dev/null
-/usr/libexec/PlistBuddy -c "Add :0:BundleIsRelocatable bool false" -c "Set :0:BundleIsVersionChecked false" "$WORK/components.plist"
+PLIST=/usr/libexec/PlistBuddy
+# The keys exist on some macOS versions and not on others: set them, or add them.
+"$PLIST" -c "Set :0:BundleIsRelocatable false" "$WORK/components.plist" 2>/dev/null \
+    || "$PLIST" -c "Add :0:BundleIsRelocatable bool false" "$WORK/components.plist"
+"$PLIST" -c "Set :0:BundleIsVersionChecked false" "$WORK/components.plist" 2>/dev/null \
+    || "$PLIST" -c "Add :0:BundleIsVersionChecked bool false" "$WORK/components.plist"
 pkgbuild --root "$WORK/root" --component-plist "$WORK/components.plist" --scripts "$WORK/scripts" \
     --identifier id.postronda.desktop --version "$VERSION" --install-location /Applications \
     "$WORK/PostRonda-app.pkg" >/dev/null 2>&1
