@@ -20,7 +20,8 @@ cp assets/PostRonda.icns "$APP/Contents/Resources/"
 cp assets/Inter-LICENSE.txt assets/Tabler-LICENSE.txt "$APP/Contents/Resources/"
 rm -f "$APP/Contents/Resources/Bruno-LICENSE.txt"
 [ -f assets/Bruno-LICENSE.txt ] && cp assets/Bruno-LICENSE.txt "$APP/Contents/Resources/"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -30,8 +31,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>PostRonda</string>
 <key>CFBundleIconFile</key><string>PostRonda</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.0</string>
-<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleShortVersionString</key><string>$VERSION</string>
+<key>CFBundleVersion</key><string>$VERSION</string>
 <key>LSMinimumSystemVersion</key><string>11.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
