@@ -139,8 +139,33 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     b.resize(len, 0);
     a > b
 }
-/// The release file for an operating system and CPU, judged by the file names.
+/// The release file to hand to a person for an operating system and CPU: an installer when
+/// there is one, otherwise a plain archive.
 pub fn pick_asset<'a>(assets: &'a [Asset], os: &str, arch: &str) -> Option<&'a Asset> {
+    pick(
+        assets,
+        os,
+        arch,
+        &[
+            ".pkg",
+            ".msi",
+            ".exe",
+            ".dmg",
+            ".appimage",
+            ".deb",
+            ".zip",
+            ".tar.gz",
+            ".tgz",
+        ],
+    )
+}
+/// The release file the app can unpack and install over itself: an archive, never an installer.
+pub fn pick_update_asset<'a>(assets: &'a [Asset], os: &str, arch: &str) -> Option<&'a Asset> {
+    pick(assets, os, arch, &[".zip", ".tar.gz", ".tgz"])
+}
+/// Judges by file name: the operating system and CPU words, and the first of `kinds` (in order
+/// of preference) that matches.
+fn pick<'a>(assets: &'a [Asset], os: &str, arch: &str, kinds: &[&str]) -> Option<&'a Asset> {
     let os_words: &[&str] = match os {
         "macos" => &["macos", "darwin", "osx"],
         "windows" => &["windows", "win64", "win32"],
@@ -154,29 +179,28 @@ pub fn pick_asset<'a>(assets: &'a [Asset], os: &str, arch: &str) -> Option<&'a A
         "aarch64" | "arm64" => &["x86_64", "x64", "amd64"],
         _ => &["aarch64", "arm64"],
     };
-    let packages = [
-        ".zip",
-        ".tar.gz",
-        ".tgz",
-        ".dmg",
-        ".msi",
-        ".exe",
-        ".appimage",
-        ".deb",
-    ];
-    let for_os: Vec<&Asset> = assets
-        .iter()
-        .filter(|a| {
-            let name = a.name.to_lowercase();
-            os_words.iter().any(|w| name.contains(w)) && packages.iter().any(|e| name.ends_with(e))
-        })
-        .collect();
     let has = |a: &Asset, words: &[&str]| words.iter().any(|w| a.name.to_lowercase().contains(w));
-    for_os
-        .iter()
-        .find(|a| has(a, arch_words))
-        .or_else(|| for_os.iter().find(|a| !has(a, other_arch)))
-        .copied()
+    for kind in kinds {
+        let for_os: Vec<&Asset> = assets
+            .iter()
+            .filter(|a| {
+                let name = a.name.to_lowercase();
+                // A Windows installer is recognised by its extension, whatever it is called.
+                let by_extension =
+                    os == "windows" && (name.ends_with(".exe") || name.ends_with(".msi"));
+                (has(a, os_words) || by_extension) && name.ends_with(kind)
+            })
+            .collect();
+        let found = for_os
+            .iter()
+            .find(|a| has(a, arch_words))
+            .or_else(|| for_os.iter().find(|a| !has(a, other_arch)))
+            .copied();
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
 }
 /// Fetches and reads the feed. Needs `curl`, like requests do.
 pub fn check(url: &str) -> Result<Release, String> {
@@ -587,7 +611,7 @@ pub fn swap_in(unpacked: &std::path::Path, current: &std::path::Path) -> Result<
 /// Downloads the release for this computer, checks it and replaces the running app with it.
 /// `status` receives short messages for the settings page.
 pub fn install(release: &Release, status: &dyn Fn(String)) -> Result<Relaunch, String> {
-    let asset = pick_asset(
+    let asset = pick_update_asset(
         &release.assets,
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -697,20 +721,36 @@ mod tests {
           "assets":[{"name":"Post-Ronda-macos-arm64.zip","browser_download_url":"https://x/mac-arm.zip"},
                     {"name":"post-ronda-linux-x86_64.tar.gz","browser_download_url":"https://x/linux-x64.tgz"},
                     {"name":"Post-Ronda-windows-x64.zip","browser_download_url":"https://x/win.zip"},
-                    {"name":"Post-Ronda-windows-x64.zip.sha256","browser_download_url":"https://x/win.sha"}]}"#;
+                    {"name":"Post-Ronda-windows-x64.zip.sha256","browser_download_url":"https://x/win.sha"},
+                    {"name":"Post-Ronda-Setup-x64.exe","browser_download_url":"https://x/win-setup.exe"},
+                    {"name":"Post-Ronda-macos-arm64.pkg","browser_download_url":"https://x/mac.pkg"}]}"#;
         let r = parse_release(github).unwrap();
         assert_eq!((r.version.as_str(), r.notes.as_str()), ("v0.3.0", "Fixes"));
+        // A person is offered the installer; the app updates itself from the archive.
+        let url = |a: Option<&Asset>| a.unwrap().url.clone();
         assert_eq!(
-            pick_asset(&r.assets, "macos", "aarch64").unwrap().url,
+            url(pick_asset(&r.assets, "macos", "aarch64")),
+            "https://x/mac.pkg"
+        );
+        assert_eq!(
+            url(pick_update_asset(&r.assets, "macos", "aarch64")),
             "https://x/mac-arm.zip"
         );
         assert_eq!(
-            pick_asset(&r.assets, "linux", "x86_64").unwrap().url,
+            url(pick_asset(&r.assets, "windows", "x86_64")),
+            "https://x/win-setup.exe"
+        );
+        assert_eq!(
+            url(pick_update_asset(&r.assets, "windows", "x86_64")),
+            "https://x/win.zip"
+        );
+        assert_eq!(
+            url(pick_asset(&r.assets, "linux", "x86_64")),
             "https://x/linux-x64.tgz"
         );
         assert_eq!(
-            pick_asset(&r.assets, "windows", "x86_64").unwrap().url,
-            "https://x/win.zip"
+            url(pick_update_asset(&r.assets, "linux", "x86_64")),
+            "https://x/linux-x64.tgz"
         );
         // No Linux arm64 file: the x86_64 one must not be offered.
         assert!(pick_asset(&r.assets, "linux", "aarch64").is_none());

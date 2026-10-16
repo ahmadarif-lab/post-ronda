@@ -48,17 +48,19 @@ Post Ronda is written in Rust with [egui](https://github.com/emilk/egui). A proj
 
 Download the package for your system from the [Releases](https://github.com/ahmadarif-lab/post-ronda/releases) page.
 
-| System | Package |
-| --- | --- |
-| macOS (Apple Silicon) | `Post-Ronda-macos-arm64.zip`, unzip and move *Post Ronda.app* to `/Applications` |
-| Linux (x86_64, arm64) | `post-ronda-linux-<arch>.tar.gz`, run `bin/post-ronda` |
-| Windows (x64) | `Post-Ronda-windows-x64.zip`, run `PostRonda.exe` |
+| System | Installer | Archive |
+| --- | --- | --- |
+| macOS (Apple Silicon) | `Post-Ronda-macos-arm64.pkg`: double-click, follow the steps, the app lands in Applications | `Post-Ronda-macos-arm64.zip` |
+| Windows (x64) | `Post-Ronda-Setup-x64.exe`: a normal setup wizard (Start menu entry, optional desktop shortcut, uninstaller; no administrator rights needed) | `Post-Ronda-windows-x64.zip`, run `PostRonda.exe` |
+| Linux (x86_64, arm64) | | `post-ronda-linux-<arch>.tar.gz`, run `bin/post-ronda` |
+
+The archives are what *Update now* uses inside the app; they are also handy if you prefer to unpack the app yourself.
 
 Post Ronda sends requests through the `curl` command, which ships with macOS and Windows 10+. On Linux install it with your package manager (`curl`). Git is only needed for the Git features.
 
 Release builds are not code-signed or notarized yet, so macOS and Windows warn on first launch:
 
-- **macOS** says it "could not verify Post Ronda is free of malware". Dismiss the dialog, open *System Settings → Privacy & Security*, scroll down and click **Open Anyway**. Or clear the quarantine flag once from a terminal: `xattr -dr com.apple.quarantine "/Applications/Post Ronda.app"`. Updates installed from inside the app do not trigger the warning again.
+- **macOS** says it "could not verify Post Ronda is free of malware" when you open the installer (or the app). Dismiss the dialog, open *System Settings → Privacy & Security*, scroll down and click **Open Anyway**. Or clear the quarantine flag once from a terminal, for the installer `xattr -dr com.apple.quarantine ~/Downloads/Post-Ronda-macos-arm64.pkg` or for the app `xattr -dr com.apple.quarantine "/Applications/Post Ronda.app"`. The installed app opens normally afterwards, and updates installed from inside the app do not trigger the warning again.
 - **Windows** SmartScreen: choose *More info*, then *Run anyway*.
 
 ## Getting started
@@ -152,8 +154,9 @@ Packages:
 
 ```sh
 ./scripts/bundle-macos.sh        # dist/Post Ronda.app (ad-hoc signed)
+./scripts/installer-macos.sh     # dist/Post-Ronda-macos-<arch>.pkg (run bundle-macos.sh first)
 ./scripts/bundle-linux.sh        # dist/post-ronda-linux-<arch>.tar.gz
-./scripts/bundle-windows.ps1     # dist/Post-Ronda-windows-x64.zip (PowerShell on Windows)
+./scripts/bundle-windows.ps1     # dist/Post-Ronda-windows-x64.zip, and Post-Ronda-Setup-x64.exe when Inno Setup is installed (PowerShell on Windows)
 ```
 
 `scripts/Dockerfile.linux` and `scripts/Dockerfile.windows` describe containers for checking Linux builds and cross-compiling Windows builds. `scripts/demo-server.py` is a small local echo server for trying the app offline.
