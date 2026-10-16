@@ -56,7 +56,10 @@ Download the package for your system from the [Releases](https://github.com/ahma
 
 Post Ronda sends requests through the `curl` command, which ships with macOS and Windows 10+. On Linux install it with your package manager (`curl`). Git is only needed for the Git features.
 
-Release builds are not code-signed yet, so macOS and Windows may warn on first launch. On macOS, right-click the app and choose *Open*.
+Release builds are not code-signed or notarized yet, so macOS and Windows warn on first launch:
+
+- **macOS** says it "could not verify Post Ronda is free of malware". Dismiss the dialog, open *System Settings → Privacy & Security*, scroll down and click **Open Anyway**. Or clear the quarantine flag once from a terminal: `xattr -dr com.apple.quarantine "/Applications/Post Ronda.app"`. Updates installed from inside the app do not trigger the warning again.
+- **Windows** SmartScreen: choose *More info*, then *Run anyway*.
 
 ## Getting started
 
