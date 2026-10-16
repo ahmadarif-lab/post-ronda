@@ -107,7 +107,9 @@ The settings button in the status bar offers two sets:
 
 ## Updates
 
-*App settings → About* can look for a newer release when the app starts and on demand. The address is configurable and accepts:
+*App settings → About* checks for a newer release when the app starts (you can turn that off) and on demand with **Check now**. When one is found, **Update now** downloads it, verifies it, replaces the app and restarts it. No manual download is needed. Unsaved requests must be saved first.
+
+The update address is configurable. It accepts:
 
 - a GitHub repository, e.g. `https://github.com/ahmadarif-lab/post-ronda` (its latest release is used), or
 - any address that returns JSON such as
@@ -116,12 +118,16 @@ The settings button in the status bar offers two sets:
   {
     "version": "1.2.3",
     "url": "https://example.com/Post-Ronda-macos-arm64.zip",
+    "sha256": "…",
     "notes": "What changed",
-    "downloads": { "post-ronda-linux-x86_64.tar.gz": "https://example.com/linux.tar.gz" }
+    "downloads": { "post-ronda-linux-x86_64.tar.gz": "https://example.com/linux.tar.gz" },
+    "checksums": { "post-ronda-linux-x86_64.tar.gz": "…" }
   }
   ```
 
-The download that matches the operating system and CPU is chosen from the file names (`macos`, `linux`, `windows`, `arm64`/`aarch64`, `x86_64`/`x64`). Post Ronda opens the download in your browser; it never installs anything on its own.
+The download that matches the operating system and CPU is chosen from the file names (`macos`, `linux`, `windows`, `arm64`/`aarch64`, `x86_64`/`x64`). Downloads must use HTTPS. If a SHA-256 is published (a `<file>.sha256` asset next to a GitHub release file, or `sha256` / `checksums` in the JSON), the download must match it or nothing is installed. Release packages are not code-signed yet.
+
+What an update replaces: on macOS the app bundle, on Linux the `post-ronda` program, on Windows `PostRonda.exe` (the previous one is kept as `PostRonda.exe.old` until the next start). The app needs write access to where it is installed; if it does not have it, use the download link instead. Development builds are never replaced.
 
 ## Not included
 

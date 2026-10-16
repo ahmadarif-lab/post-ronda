@@ -27,6 +27,9 @@ enum Message {
     Git(Result<String, String>),
     /// Result of an update check; the flag says the user asked for it (not the start-up check).
     Update(bool, Result<post_ronda::update::Release, String>),
+    UpdateStatus(String),
+    /// The new version is in place; what to start once this one has quit.
+    UpdateInstalled(Result<post_ronda::update::Relaunch, String>),
 }
 /// Where the update check stands, as shown in App settings > About.
 #[derive(Clone, Debug, Default)]
@@ -36,6 +39,8 @@ enum UpdateState {
     Checking,
     UpToDate,
     Available(post_ronda::update::Release),
+    /// Downloading, checking or installing: the message to show.
+    Installing(String),
     Failed(String),
 }
 /// How much of the collection a disk write may take from the live (possibly edited) state.
@@ -116,6 +121,8 @@ struct App {
     prefs_tab: usize,
     update_state: UpdateState,
     update_checked: bool,
+    #[cfg(debug_assertions)]
+    update_checked_now: bool,
     /// Show the password / token fields of the Auth tab in clear text.
     show_secret: bool,
     /// Settings button: first asks whether app or project settings are meant.
@@ -344,6 +351,8 @@ impl App {
             prefs_tab: 0,
             update_state: UpdateState::Idle,
             update_checked: false,
+            #[cfg(debug_assertions)]
+            update_checked_now: false,
             show_secret: false,
             settings_chooser: false,
             project_settings: false,
@@ -434,6 +443,7 @@ impl App {
         };
         app.env_saved = app.environments.clone();
         app.remote = origin_of(&app.project);
+        post_ronda::update::clean_up_after_update();
         app.history = load_history(&app.project);
         #[cfg(debug_assertions)]
         {
@@ -584,6 +594,17 @@ impl App {
                     value: "{{token}}".into(),
                     ..Default::default()
                 };
+            }
+            "update-available" => {
+                app.settings = true;
+                app.prefs_tab = 5;
+                app.update_state = UpdateState::Available(post_ronda::update::Release {
+                    version: "v0.3.0".into(),
+                    page: "https://github.com/ahmadarif-lab/post-ronda/releases/tag/v0.3.0".into(),
+                    notes: "Faster startup\nFixes a crash when importing large collections".into(),
+                    assets: vec![],
+                    checksums: Default::default(),
+                });
             }
             "project-git" => app.open_project_settings(5),
             "project-vars" => app.open_project_settings(2),
@@ -1403,6 +1424,29 @@ impl App {
             ctx.request_repaint();
         });
     }
+    /// Downloads the available release, replaces this app with it and restarts.
+    fn install_update(&mut self, ctx: &egui::Context) {
+        let UpdateState::Available(release) = self.update_state.clone() else {
+            return;
+        };
+        if self.unsaved_count() > 0 {
+            self.notify(Err(
+                "Save or discard your unsaved requests first, then update.".into(),
+            ));
+            return;
+        }
+        self.update_state = UpdateState::Installing("Starting…".into());
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let report = |text: String| {
+                let _ = tx.send(Message::UpdateStatus(text));
+                ctx.request_repaint();
+            };
+            let result = post_ronda::update::install(&release, &report);
+            let _ = tx.send(Message::UpdateInstalled(result));
+            ctx.request_repaint();
+        });
+    }
     /// Opens a web address (or downloads a file) in the default browser.
     fn open_url(&mut self, url: &str) {
         if !(url.starts_with("https://") || url.starts_with("http://")) {
@@ -1914,6 +1958,26 @@ impl eframe::App for App {
                 self.check_updates(ctx, false);
             }
         }
+        // Development only: POST_RONDA_UPDATE_NOW=1 checks the feed in POST_RONDA_UPDATE_FEED and installs
+        // what it finds, then exits instead of restarting, so the update path can be tried safely.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("POST_RONDA_UPDATE_NOW").is_some() {
+            match &self.update_state {
+                UpdateState::Idle if !self.update_checked_now => {
+                    self.update_checked_now = true;
+                    if let Some(feed) = std::env::var_os("POST_RONDA_UPDATE_FEED") {
+                        self.prefs.update_url = feed.to_string_lossy().into_owned();
+                    }
+                    self.check_updates(ctx, true);
+                }
+                UpdateState::Available(_) => self.install_update(ctx),
+                UpdateState::Failed(why) => {
+                    eprintln!("UPDATE FAILED: {why}");
+                    std::process::exit(3);
+                }
+                _ => {}
+            }
+        }
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Message::Response(origin, result) => {
@@ -1965,6 +2029,29 @@ impl eframe::App for App {
                         Err(e) if manual => UpdateState::Failed(e),
                         Err(_) => UpdateState::Idle,
                     };
+                }
+                Message::UpdateStatus(text) => {
+                    if matches!(self.update_state, UpdateState::Installing(_)) {
+                        self.update_state = UpdateState::Installing(text);
+                    }
+                }
+                Message::UpdateInstalled(Ok(relaunch)) => {
+                    #[cfg(debug_assertions)]
+                    if std::env::var_os("POST_RONDA_UPDATE_NOW").is_some() {
+                        eprintln!("UPDATED");
+                        std::process::exit(0);
+                    }
+                    // Everything is saved first; then this version quits and the new one starts.
+                    let _ = self.write(SaveScope::Structural);
+                    self.update_state = UpdateState::Installing("Restarting…".into());
+                    let _ = post_ronda::process::command(&relaunch.program)
+                        .args(&relaunch.args)
+                        .spawn();
+                    self.force_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Message::UpdateInstalled(Err(why)) => {
+                    self.update_state = UpdateState::Failed(why);
                 }
                 Message::Git(result) => {
                     self.git_running = false;

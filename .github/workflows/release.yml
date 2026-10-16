@@ -52,6 +52,10 @@ jobs:
         with:
           path: packages
           merge-multiple: true
+      - name: Checksums, so the app can verify what it downloads
+        run: |
+          cd packages
+          for file in *.zip *.tar.gz; do sha256sum "$file" > "$file.sha256"; done
       - uses: softprops/action-gh-release@v2
         with:
           files: packages/*

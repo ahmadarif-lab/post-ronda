@@ -4376,18 +4376,112 @@ impl App {
                 );
                 ui.end_row();
             });
-        ui.add_space(12.);
-        ui.label("App data");
-        ui.add_space(2.);
-        ui.add(
-            egui::Label::new(
-                RichText::new(crate::state_dir().display().to_string()).color(p.muted),
-            )
-            .wrap(),
-        );
-        ui.add_space(26.);
+        ui.add_space(24.);
         ui.label("Software updates");
         ui.add_space(6.);
+        ui.add_space(8.);
+        let ctx = ui.ctx().clone();
+        ui.horizontal(|ui| {
+            let checking = matches!(
+                self.update_state,
+                crate::UpdateState::Checking | crate::UpdateState::Installing(_)
+            );
+            if ui
+                .add_enabled(
+                    !checking,
+                    egui::Button::new("Check now").min_size(vec2(96., 30.)),
+                )
+                .on_hover_cursor(eframe::egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                self.check_updates(&ctx, true);
+            }
+            if self.prefs.update_url != post_ronda::update::DEFAULT_FEED
+                && ui.link("Use the default").clicked()
+            {
+                self.prefs.update_url = post_ronda::update::DEFAULT_FEED.into();
+                self.update_state = crate::UpdateState::Idle;
+                self.store_preferences(&ctx);
+            }
+        });
+        ui.add_space(6.);
+        let mut download = None;
+        let mut install = false;
+        match &self.update_state {
+            crate::UpdateState::Idle => {}
+            crate::UpdateState::Checking => {
+                ui.label(RichText::new("Checking…").size(12.5).color(p.muted));
+            }
+            crate::UpdateState::UpToDate => {
+                ui.label(
+                    RichText::new(format!(
+                        "You are up to date (v{}).",
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .size(12.5)
+                    .color(p.green),
+                );
+            }
+            crate::UpdateState::Failed(why) => {
+                ui.add(egui::Label::new(RichText::new(why).size(12.5).color(p.red)).wrap());
+            }
+            crate::UpdateState::Available(release) => {
+                ui.label(
+                    RichText::new(format!(
+                        "Version {} is available.",
+                        release.version.trim_start_matches('v')
+                    ))
+                    .size(13.)
+                    .color(p.gold),
+                );
+                if !release.notes.trim().is_empty() {
+                    let notes: String = release.notes.trim().chars().take(600).collect();
+                    ui.add(egui::Label::new(RichText::new(notes).size(12.).color(p.muted)).wrap());
+                }
+                ui.add_space(6.);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("Update now").color(Color32::BLACK))
+                                .fill(p.gold)
+                                .min_size(vec2(108., 30.)),
+                        )
+                        .on_hover_cursor(eframe::egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        install = true;
+                    }
+                    if let Some(url) = release.download_for_this_computer()
+                        && ui.link("Download by hand").clicked()
+                    {
+                        download = Some(url);
+                    }
+                    if !release.page.is_empty() && ui.link("Release page").clicked() {
+                        download = Some(release.page.clone());
+                    }
+                });
+                ui.add_space(2.);
+                ui.label(
+                    RichText::new("The app downloads the new version, checks it, replaces itself and restarts.")
+                        .size(11.5)
+                        .color(p.muted),
+                );
+            }
+            crate::UpdateState::Installing(message) => {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(16.).color(p.muted));
+                    ui.label(RichText::new(message).size(12.5).color(p.muted));
+                });
+                ui.ctx().request_repaint_after(Duration::from_millis(200));
+            }
+        }
+        if let Some(url) = download {
+            self.open_url(&url);
+        }
+        if install {
+            self.install_update(&ctx);
+        }
+        ui.add_space(14.);
         if switch(
             ui,
             &mut self.prefs.auto_update,
@@ -4422,79 +4516,15 @@ impl App {
             )
             .wrap(),
         );
-        ui.add_space(8.);
-        let ctx = ui.ctx().clone();
-        ui.horizontal(|ui| {
-            let checking = matches!(self.update_state, crate::UpdateState::Checking);
-            if ui
-                .add_enabled(
-                    !checking,
-                    egui::Button::new("Check now").min_size(vec2(96., 30.)),
-                )
-                .on_hover_cursor(eframe::egui::CursorIcon::PointingHand)
-                .clicked()
-            {
-                self.check_updates(&ctx, true);
-            }
-            if self.prefs.update_url != post_ronda::update::DEFAULT_FEED
-                && ui.link("Use the default").clicked()
-            {
-                self.prefs.update_url = post_ronda::update::DEFAULT_FEED.into();
-                self.update_state = crate::UpdateState::Idle;
-                self.store_preferences(&ctx);
-            }
-        });
-        ui.add_space(6.);
-        let mut download = None;
-        match &self.update_state {
-            crate::UpdateState::Idle => {}
-            crate::UpdateState::Checking => {
-                ui.label(RichText::new("Checking…").size(12.5).color(p.muted));
-            }
-            crate::UpdateState::UpToDate => {
-                ui.label(
-                    RichText::new(format!(
-                        "You are up to date (v{}).",
-                        env!("CARGO_PKG_VERSION")
-                    ))
-                    .size(12.5)
-                    .color(p.green),
-                );
-            }
-            crate::UpdateState::Failed(why) => {
-                ui.add(egui::Label::new(RichText::new(why).size(12.5).color(p.red)).wrap());
-            }
-            crate::UpdateState::Available(release) => {
-                ui.label(
-                    RichText::new(format!(
-                        "Version {} is available.",
-                        release.version.trim_start_matches('v')
-                    ))
-                    .size(13.)
-                    .color(p.gold),
-                );
-                if !release.notes.trim().is_empty() {
-                    let notes: String = release.notes.trim().chars().take(600).collect();
-                    ui.add(egui::Label::new(RichText::new(notes).size(12.).color(p.muted)).wrap());
-                }
-                ui.add_space(6.);
-                ui.horizontal(|ui| {
-                    if let Some(url) = release.download_for_this_computer()
-                        && ui
-                            .add(egui::Button::new("Download").min_size(vec2(96., 30.)))
-                            .clicked()
-                    {
-                        download = Some(url);
-                    }
-                    if !release.page.is_empty() && ui.link("Release page").clicked() {
-                        download = Some(release.page.clone());
-                    }
-                });
-            }
-        }
-        if let Some(url) = download {
-            self.open_url(&url);
-        }
+        ui.add_space(22.);
+        ui.label("App data");
+        ui.add_space(2.);
+        ui.add(
+            egui::Label::new(
+                RichText::new(crate::state_dir().display().to_string()).color(p.muted),
+            )
+            .wrap(),
+        );
         ui.add_space(22.);
         ui.label("Telemetry");
         ui.add_space(4.);
