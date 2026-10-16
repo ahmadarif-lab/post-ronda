@@ -1,0 +1,7 @@
+FROM rust:1.99-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev \
+    libgl1-mesa-dev libgl1-mesa-dri libglx-mesa0 libxkbcommon-x11-0 libxcursor1 libxi6 libxinerama1 curl git xvfb xauth \
+    && rm -rf /var/lib/apt/lists/*
+ENV LIBGL_ALWAYS_SOFTWARE=1
+WORKDIR /work

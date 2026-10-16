@@ -1,0 +1,7 @@
+FROM post-ronda-linux-check:local
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 zip \
+    libxkbcommon-x11-0 libxcursor1 libxi6 libxinerama1 \
+    && rm -rf /var/lib/apt/lists/*
+RUN rustup target add x86_64-pc-windows-gnu
+ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc

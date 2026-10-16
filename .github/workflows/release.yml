@@ -1,0 +1,58 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04, ubuntu-24.04-arm, windows-2022]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The tag must match the version in Cargo.toml
+        run: test "v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" = "$GITHUB_REF_NAME"
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev curl git
+      - run: cargo test --locked
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: |
+          ./scripts/bundle-macos.sh
+          ditto -c -k --sequesterRsrc --keepParent 'dist/Post Ronda.app' dist/Post-Ronda-macos-arm64.zip
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: ./scripts/bundle-linux.sh
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/bundle-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.os }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+  publish:
+    needs: package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: packages/*
+          generate_release_notes: true

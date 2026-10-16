@@ -1,0 +1,49 @@
+name: Native desktop builds
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev curl git
+      - run: cargo fmt --check
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: |
+          ./scripts/bundle-macos.sh
+          ditto -c -k --sequesterRsrc --keepParent 'dist/Post Ronda.app' dist/Post-Ronda-macos-arm64.zip
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: ./scripts/bundle-linux.sh
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/bundle-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: post-ronda-${{ matrix.os }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error

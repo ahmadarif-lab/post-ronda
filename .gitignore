@@ -1,0 +1,32 @@
+# Build output and packages
+/target
+/dist
+
+# macOS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Python (helper scripts)
+__pycache__/
+*.pyc
+
+# Node tooling used by scripts/build-icons.cjs
+node_modules/
+
+# Logs and screenshots captured while developing
+*.log
+*.ppm
+
+# Local secrets and the app's own recovery copies
+.env
+.env.*
+collection.recovery-*.json
+environments.recovery-*.json
+
+# Sources of generated assets. scripts/build-icons.cjs downloads the Tabler icons it needs and
+# scripts/subset-font.py shrinks the full Inter font; the generated files in assets/ are committed.
+/assets/tabler/
+/assets/src/
