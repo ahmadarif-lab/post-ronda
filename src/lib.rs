@@ -6,6 +6,10 @@ pub mod http;
 pub mod process;
 pub mod update;
 
+/// One line that says what Post Ronda is: the welcome screen, About, README and package
+/// metadata all use these words (a test keeps the files that cannot import it in step).
+pub const TAGLINE: &str = "A fast, native, local-first API client. No account needed.";
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -307,6 +311,20 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_tagline_reads_the_same_in_every_file_that_carries_it() {
+        for (file, text) in [
+            ("README.md", include_str!("../README.md")),
+            ("Cargo.toml", include_str!("../Cargo.toml")),
+            ("build.rs", include_str!("../build.rs")),
+            (
+                "scripts/bundle-linux.sh",
+                include_str!("../scripts/bundle-linux.sh"),
+            ),
+        ] {
+            assert!(text.contains(TAGLINE), "{file} has drifted from TAGLINE");
+        }
+    }
     #[test]
     fn auth_becomes_the_header_or_query_it_stands_for() {
         let with = |kind, f: &dyn Fn(&mut Auth)| {

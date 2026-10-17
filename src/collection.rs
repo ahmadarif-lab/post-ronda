@@ -254,12 +254,24 @@ pub fn import(s: &str) -> Result<Collection, String> {
 pub fn import_with_notes(s: &str) -> Result<(Collection, Vec<String>), String> {
     let mut v: Value = match serde_json::from_str(s) {
         Ok(v) => v,
-        // OpenAPI documents are often YAML.
+        // OpenAPI documents and Insomnia's newer exports are often YAML.
         Err(json_error) => match serde_yaml::from_str::<Value>(s) {
-            Ok(v) if v.get("openapi").is_some() || v.get("swagger").is_some() => v,
+            Ok(v)
+                if v.get("openapi").is_some()
+                    || v.get("swagger").is_some()
+                    || insomnia::is_export(&v) =>
+            {
+                v
+            }
             _ => return Err(json_error.to_string()),
         },
     };
+    if insomnia::is_export(&v) {
+        return insomnia::convert(&v);
+    }
+    if bruno::is_export(&v) {
+        return bruno::convert_export(&v);
+    }
     if v.get("openapi").is_some() || v.get("swagger").is_some() {
         return openapi::convert(&v);
     }
@@ -282,7 +294,7 @@ pub fn import_with_notes(s: &str) -> Result<(Collection, Vec<String>), String> {
     }
     if !v["item"].is_array() {
         return Err(
-            "Expected a Postman v2/v2.1 collection, an OpenAPI file or a Post Ronda collection"
+            "Expected a Postman, Insomnia or Bruno collection, an OpenAPI file or a Post Ronda collection"
                 .into(),
         );
     }
@@ -335,7 +347,17 @@ pub fn import_with_notes(s: &str) -> Result<(Collection, Vec<String>), String> {
     }
     Ok((c, notes.messages()))
 }
+mod bruno;
+mod insomnia;
 mod openapi;
+/// Whether `dir` is a Bruno collection on disk (it holds `bruno.json`).
+pub fn is_bruno_folder(dir: &std::path::Path) -> bool {
+    bruno::is_folder(dir)
+}
+/// Reads a Bruno collection folder, with what could not be carried over.
+pub fn import_bruno_folder(dir: &std::path::Path) -> Result<(Collection, Vec<String>), String> {
+    bruno::import_folder(dir)
+}
 /// Things an import had to leave out.
 #[derive(Default)]
 struct Notes {
@@ -701,6 +723,165 @@ mod tests {
                 .iter()
                 .map(|r| r.auth.clone())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn insomnia_v4_export_keeps_folders_order_body_auth_and_variables() {
+        let export = r#"{"_type":"export","__export_format":4,"resources":[
+          {"_id":"wrk_1","_type":"workspace","name":"Shop","description":"Docs"},
+          {"_id":"env_1","_type":"environment","parentId":"wrk_1","data":{"host":"https://api.test","retries":3,"nested":{"a":1}}},
+          {"_id":"env_2","_type":"environment","parentId":"env_1","name":"Staging","data":{}},
+          {"_id":"fld_1","_type":"request_group","parentId":"wrk_1","name":"Orders","metaSortKey":-2},
+          {"_id":"fld_2","_type":"request_group","parentId":"wrk_1","name":"Empty","metaSortKey":5},
+          {"_id":"req_b","_type":"request","parentId":"fld_1","name":"Create","method":"post",
+           "url":"{{ _.host }}/orders","metaSortKey":-1,
+           "headers":[{"name":"X-A","value":"1"},{"name":"X-Off","value":"2","disabled":true}],
+           "parameters":[{"name":"dry run","value":"a&b"},{"name":"off","value":"x","disabled":true}],
+           "body":{"mimeType":"application/json","text":"{\"a\":1}"},
+           "authentication":{"type":"bearer","token":"{{ _.token }}"}},
+          {"_id":"req_a","_type":"request","parentId":"fld_1","name":"List","method":"GET",
+           "url":"{{ _.host }}/orders?x=1","metaSortKey":-3,
+           "authentication":{"type":"oauth2"}},
+          {"_id":"req_c","_type":"request","parentId":"wrk_1","name":"Upload","method":"PUT","url":"https://a.test",
+           "metaSortKey":0,
+           "body":{"mimeType":"multipart/form-data","params":[{"name":"t","value":"x"},{"name":"f","type":"file","fileName":"/tmp/a.png"}]}},
+          {"_id":"grpc_1","_type":"grpc_request","parentId":"wrk_1","name":"G"}
+        ]}"#;
+        let (c, notes) = import_with_notes(export).unwrap();
+        assert_eq!(c.name, "Shop");
+        assert_eq!(c.description, "Docs");
+        let names: Vec<_> = c.requests.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Orders / List", "Orders / Create", "Upload"]);
+        let create = &c.requests[1];
+        assert_eq!(create.method, "POST");
+        assert_eq!(create.url, "{{host}}/orders?dry%20run=a%26b");
+        assert_eq!(create.headers.len(), 2);
+        assert!(!create.headers[1].enabled);
+        assert_eq!(create.body_mode, BodyMode::Raw);
+        assert_eq!(create.raw_kind, RawKind::Json);
+        assert_eq!(create.auth.kind, crate::AuthKind::Bearer);
+        assert_eq!(create.auth.token, "{{token}}");
+        assert_eq!(c.requests[0].url, "{{host}}/orders?x=1");
+        let upload = &c.requests[2];
+        assert_eq!(upload.body_mode, BodyMode::FormData);
+        assert!(upload.form[1].file && upload.form[1].value == "/tmp/a.png");
+        let vars: Vec<_> = c
+            .variables
+            .iter()
+            .map(|v| (v.name.as_str(), v.value.as_str()))
+            .collect();
+        assert_eq!(vars, [("host", "https://api.test"), ("retries", "3")]);
+        assert_eq!(c.folders, [FolderMark::new("Empty", 3)]);
+        let notes = notes.join(" | ");
+        assert!(notes.contains("oauth2"), "{notes}");
+        assert!(notes.contains("gRPC"), "{notes}");
+        assert!(notes.contains("sub-environment"), "{notes}");
+    }
+
+    #[test]
+    fn insomnia_v5_yaml_is_read_with_nested_folders() {
+        let export = "type: collection.insomnia.rest/5.0\nname: Pets\ncollection:\n  - name: Admin\n    children:\n      - name: Delete\n        method: DELETE\n        url: https://a.test/pets/1\n        authentication:\n          type: basic\n          username: u\n          password: p\n  - name: Ping\n    method: GET\n    url: https://a.test/ping\n    meta:\n      description: Is it up\nenvironments:\n  name: Base Environment\n  data:\n    key: v\n";
+        let (c, _) = import_with_notes(export).unwrap();
+        assert_eq!(c.name, "Pets");
+        assert_eq!(c.requests[0].name, "Admin / Delete");
+        assert_eq!(c.requests[0].auth.kind, crate::AuthKind::Basic);
+        assert_eq!(c.requests[1].description, "Is it up");
+        assert_eq!(c.variables[0].name, "key");
+    }
+
+    #[test]
+    fn bruno_json_export_is_read_in_bruno_order() {
+        let export = r#"{"name":"Bru","version":"1","items":[
+          {"type":"http-request","name":"Second","seq":2,"request":{"url":"https://a.test/users/:id","method":"POST",
+            "params":[{"name":"id","value":"5","type":"path","enabled":true}],
+            "headers":[{"name":"A","value":"1","enabled":false}],
+            "body":{"mode":"json","json":"{\"a\":1}"},
+            "auth":{"mode":"apikey","apikey":{"key":"k","value":"v","placement":"queryparams"}},
+            "script":{"req":"console.log(1)"}}},
+          {"type":"folder","name":"Dir","seq":1,"items":[
+            {"type":"http-request","name":"First","seq":1,"request":{"url":"https://a.test","method":"GET",
+              "body":{"mode":"formUrlEncoded","formUrlEncoded":[{"name":"k","value":"v","enabled":true}]},
+              "auth":{"mode":"inherit"}}}]}
+        ],"environments":[{"name":"Local","variables":[]}]}"#;
+        let (c, notes) = import_with_notes(export).unwrap();
+        let names: Vec<_> = c.requests.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Dir / First", "Second"]);
+        assert_eq!(c.requests[0].body_mode, BodyMode::UrlEncoded);
+        let second = &c.requests[1];
+        assert_eq!(second.url, "https://a.test/users/5");
+        assert!(!second.headers[0].enabled);
+        assert_eq!(second.auth.kind, crate::AuthKind::ApiKey);
+        assert!(second.auth.in_query);
+        assert_eq!(second.body, "{\"a\":1}");
+        let notes = notes.join(" | ");
+        assert!(notes.contains("script"), "{notes}");
+        assert!(notes.contains("environment"), "{notes}");
+    }
+
+    #[test]
+    fn bruno_folder_of_bru_files_is_read_with_folders_variables_and_bodies() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let write = |path: &str, text: &str| {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        };
+        write(
+            "bruno.json",
+            r#"{"version":"1","name":"Shop API","type":"collection"}"#,
+        );
+        write(
+            "collection.bru",
+            "headers {\n  X-Team: blue\n}\n\nvars:pre-request {\n  host: https://api.test\n}\n",
+        );
+        write("environments/Local.bru", "vars {\n  a: 1\n}\n");
+        write("Users/folder.bru", "meta {\n  name: People\n  seq: 1\n}\n");
+        write(
+            "Users/create.bru",
+            "meta {\n  name: Create user\n  type: http\n  seq: 2\n}\n\npost {\n  url: {{host}}/users/:team?x=1\n  body: json\n  auth: bearer\n}\n\nparams:path {\n  team: blue\n}\n\nheaders {\n  Accept: application/json\n  ~X-Off: 1\n}\n\nauth:bearer {\n  token: {{token}}\n}\n\nbody:json {\n  {\n    \"name\": \"Arif\"\n  }\n}\n\nscript:pre-request {\n  console.log(1)\n}\n\ndocs {\n  Creates a user.\n}\n",
+        );
+        write(
+            "Users/list.bru",
+            "meta {\n  name: List users\n  seq: 1\n}\n\nget {\n  url: {{host}}/users\n  body: none\n  auth: none\n}\n\ntags [\n  smoke\n]\n",
+        );
+        write(
+            "login.bru",
+            "meta {\n  name: Login\n  seq: 1\n}\n\npost {\n  url: {{host}}/login\n  body: multipartForm\n}\n\nbody:multipart-form {\n  user: arif\n  photo: @file(/tmp/me.png)\n}\n",
+        );
+        std::fs::create_dir_all(root.join("Empty")).unwrap();
+        let (c, notes) = import_bruno_folder(root).unwrap();
+        assert_eq!(c.name, "Shop API");
+        assert_eq!(c.headers[0].name, "X-Team");
+        assert_eq!(c.variables[0].name, "host");
+        let names: Vec<_> = c.requests.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Login", "People / List users", "People / Create user"]
+        );
+        let login = &c.requests[0];
+        assert_eq!(login.body_mode, BodyMode::FormData);
+        assert!(login.form[1].file && login.form[1].value == "/tmp/me.png");
+        let create = &c.requests[2];
+        assert_eq!(create.method, "POST");
+        assert_eq!(create.url, "{{host}}/users/blue?x=1");
+        assert_eq!(create.auth.token, "{{token}}");
+        assert!(!create.headers[1].enabled);
+        assert_eq!(create.raw_kind, RawKind::Json);
+        assert_eq!(create.body, "{\n  \"name\": \"Arif\"\n}");
+        assert_eq!(create.description, "Creates a user.");
+        assert_eq!(c.folders, [FolderMark::new("Empty", 3)]);
+        let notes = notes.join(" | ");
+        assert!(notes.contains("1 script"), "{notes}");
+        assert!(notes.contains("1 environment"), "{notes}");
+        // A folder without bruno.json is refused with a reason, not read as empty.
+        let other = tempfile::tempdir().unwrap();
+        assert!(!is_bruno_folder(other.path()));
+        assert!(
+            import_bruno_folder(other.path())
+                .unwrap_err()
+                .contains("bruno.json")
         );
     }
 }

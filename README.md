@@ -1,6 +1,8 @@
 # Post Ronda
 
-A fast, native API client with local-first projects. No account, no cloud sync, no telemetry, no Electron, no webview.
+A fast, native, local-first API client. No account needed.
+
+No cloud sync, no telemetry, no Electron, no webview.
 
 [![Native desktop builds](https://github.com/ahmadarif-lab/post-ronda/actions/workflows/desktop.yml/badge.svg)](https://github.com/ahmadarif-lab/post-ronda/actions/workflows/desktop.yml)
 
@@ -50,7 +52,8 @@ See the [benchmark results and methodology](docs/benchmark.md) for resource meas
 - Cookies are kept between requests (one jar per project).
 
 **Import and export**
-- Import Postman collections (v2 and v2.1) and environments, and OpenAPI 3 / Swagger 2 documents (JSON or YAML). Drop files onto the window to import them.
+- Import Postman collections (v2 and v2.1) and environments, Insomnia exports (v4 JSON and v5 YAML), Bruno collections (a folder of `.bru` files, or Bruno's JSON export) and OpenAPI 3 / Swagger 2 documents (JSON or YAML). Drop files, or a Bruno collection folder, onto the window to import them. Scripts and sub-environments are not carried over; the import dialog says what was left out.
+- **Import…** in the project menu asks where the data comes from (Postman, Insomnia, Bruno, OpenAPI or cURL). On the very first launch a welcome screen offers the same choices, plus creating a project or starting with a request.
 - Export a project or a single folder as a Postman v2.1 collection, or generate Markdown documentation.
 
 **Network**

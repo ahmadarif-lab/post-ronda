@@ -44,6 +44,26 @@ enum UpdateState {
     Failed(String),
 }
 /// How much of the collection a disk write may take from the live (possibly edited) state.
+/// What kind of file the import picker asks for. All of them read either format; the kind only
+/// words the picker and its filter.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ImportSource {
+    Any,
+    Postman,
+    Insomnia,
+    OpenApi,
+}
+/// One way to begin, offered by the welcome screen and the import chooser.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum StartChoice {
+    Postman,
+    Insomnia,
+    Bruno,
+    OpenApi,
+    Curl,
+    NewProject,
+    NewRequest,
+}
 #[derive(Clone, Copy)]
 enum SaveScope {
     /// Everything as it is now, including unsaved edits.
@@ -103,7 +123,12 @@ struct App {
     pretty: bool,
     notice: String,
     error: bool,
+    /// The Import dialog is open.
     import_open: bool,
+    /// ...and is on its cURL step instead of the list of sources.
+    import_curl: bool,
+    /// First-run screen with the ways to get started; shown once, on the very first launch.
+    welcome_open: bool,
     curl_text: String,
     search: String,
     remote: String,
@@ -270,6 +295,11 @@ fn window_icon() -> egui::IconData {
 }
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Nothing opened by hand and nothing remembered from an earlier run: a brand new install.
+        // Checked before anything below writes to the state folder.
+        let first_run = std::env::args_os().nth(1).is_none()
+            && !state_dir().join("last-project").exists()
+            && !state_dir().join("projects.json").exists();
         #[allow(unused_mut)]
         let mut prefs = style::Preferences::load(&state_dir().join("preferences.json"));
         #[cfg(debug_assertions)]
@@ -334,6 +364,8 @@ impl App {
             notice,
             error,
             import_open: false,
+            import_curl: false,
+            welcome_open: first_run,
             curl_text: String::new(),
             search: String::new(),
             remote: String::new(),
@@ -490,7 +522,9 @@ impl App {
                 app.np_merge = merge == "importmerge";
             }
             "newproject" => app.begin_new_project(None),
-            "import" => app.import_open = true,
+            "welcome" => app.welcome_open = true,
+            "import-chooser" => app.open_import(false),
+            "import" => app.open_import(true),
             "pinned" => {
                 app.collection.pinned = vec![
                     "Users".into(),
@@ -922,23 +956,102 @@ impl App {
     /// Picks a collection file and opens the import dialog, where the user decides between a
     /// project of its own and adding the contents to the open project.
     fn import_collection_file(&mut self, merge: bool) {
+        self.import_file(merge, ImportSource::Any);
+    }
+    /// Like [`Self::import_collection_file`], with the file picker worded for `source`. Returns
+    /// true when a file was read and the import dialog is open for it.
+    fn import_file(&mut self, merge: bool, source: ImportSource) -> bool {
+        let (title, filter, extensions): (_, _, &[&str]) = match source {
+            ImportSource::Any => (
+                "Import a Postman collection or an OpenAPI file",
+                "Postman collection or OpenAPI",
+                &["json", "yaml", "yml"],
+            ),
+            ImportSource::Postman => (
+                "Import a Postman collection",
+                "Postman collection",
+                &["json"],
+            ),
+            ImportSource::Insomnia => (
+                "Import an Insomnia export",
+                "Insomnia export (JSON or YAML)",
+                &["json", "yaml", "yml"],
+            ),
+            ImportSource::OpenApi => (
+                "Import an OpenAPI file",
+                "OpenAPI (JSON or YAML)",
+                &["json", "yaml", "yml"],
+            ),
+        };
         let Some(file) = rfd::FileDialog::new()
-            .set_title("Import a Postman collection or an OpenAPI file")
-            .add_filter("Postman collection or OpenAPI", &["json", "yaml", "yml"])
+            .set_title(title)
+            .add_filter(filter, extensions)
             .pick_file()
         else {
-            return;
+            return false;
         };
-        match std::fs::read_to_string(&file)
-            .map_err(|e| e.to_string())
-            .and_then(|s| collection::import_with_notes(&s))
-        {
+        self.begin_import(
+            std::fs::read_to_string(&file)
+                .map_err(|e| e.to_string())
+                .and_then(|s| collection::import_with_notes(&s)),
+            merge,
+        )
+    }
+    /// Picks a Bruno collection folder (the one with `bruno.json`) and opens the import dialog.
+    fn import_bruno(&mut self, merge: bool) -> bool {
+        let Some(dir) = rfd::FileDialog::new()
+            .set_title("Choose your Bruno collection folder")
+            .pick_folder()
+        else {
+            return false;
+        };
+        self.begin_import(collection::import_bruno_folder(&dir), merge)
+    }
+    /// Hands what was read to the "Import Collection" dialog, or says why it could not be read.
+    fn begin_import(
+        &mut self,
+        read: Result<(Collection, Vec<String>), String>,
+        merge: bool,
+    ) -> bool {
+        match read {
             Ok((c, notes)) => {
                 self.begin_new_project(Some(c));
                 self.np_notes = notes;
                 self.np_merge = merge;
+                true
             }
-            Err(e) => self.notify(Err(e)),
+            Err(e) => {
+                self.notify(Err(e));
+                false
+            }
+        }
+    }
+    /// Opens the Import dialog, on the list of sources or straight on its cURL step.
+    fn open_import(&mut self, curl: bool) {
+        self.import_open = true;
+        self.import_curl = curl;
+        self.import_error.clear();
+    }
+    /// Runs one of the choices of the welcome screen or the import chooser. Returns true when
+    /// the dialog that offered it has done its job and should close.
+    fn start_with(&mut self, choice: StartChoice) -> bool {
+        match choice {
+            StartChoice::Postman => self.import_file(false, ImportSource::Postman),
+            StartChoice::Insomnia => self.import_file(false, ImportSource::Insomnia),
+            StartChoice::Bruno => self.import_bruno(false),
+            StartChoice::OpenApi => self.import_file(false, ImportSource::OpenApi),
+            StartChoice::Curl => {
+                self.open_import(true);
+                true
+            }
+            StartChoice::NewProject => {
+                self.begin_new_project(None);
+                true
+            }
+            StartChoice::NewRequest => {
+                self.focus_url = true;
+                true
+            }
         }
     }
     /// Files or folders dropped on the window: collections open the import dialog, environments
@@ -953,7 +1066,15 @@ impl App {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             if path.is_dir() {
-                self.switch_project(path);
+                // A Bruno collection is imported; any other folder is a project to open.
+                if collection::is_bruno_folder(&path) {
+                    match collection::import_bruno_folder(&path) {
+                        Ok(imported) => collections.push(imported),
+                        Err(e) => errors.push(format!("{name}: {e}")),
+                    }
+                } else {
+                    self.switch_project(path);
+                }
                 continue;
             }
             let text = match std::fs::read_to_string(&path) {
@@ -2193,7 +2314,7 @@ impl eframe::App for App {
         if !self.git_running
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::I))
         {
-            self.import_open = true;
+            self.open_import(false);
         }
         if !self.git_running
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E))

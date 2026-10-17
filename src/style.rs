@@ -577,6 +577,34 @@ pub fn empty_state_icon(ui: &Ui, rect: Rect, color: Color32) {
         color,
     );
 }
+/// The app's own icon, for the welcome screen.
+pub fn app_logo(ui: &Ui, rect: Rect) {
+    let id = Id::new("app-logo");
+    let texture = ui
+        .ctx()
+        .data(|d| d.get_temp::<TextureHandle>(id))
+        .unwrap_or_else(|| {
+            let img = image::load_from_memory(include_bytes!("../assets/icon-256.png"))
+                .expect("bundled app icon")
+                .into_rgba8();
+            let texture = ui.ctx().load_texture(
+                "Post Ronda logo",
+                ColorImage::from_rgba_unmultiplied(
+                    [img.width() as usize, img.height() as usize],
+                    img.as_raw(),
+                ),
+                TextureOptions::LINEAR,
+            );
+            ui.ctx().data_mut(|d| d.insert_temp(id, texture.clone()));
+            texture
+        });
+    ui.painter().image(
+        texture.id(),
+        rect,
+        Rect::from_min_max(pos2(0., 0.), pos2(1., 1.)),
+        Color32::WHITE,
+    );
+}
 pub fn icon_button(ui: &mut Ui, rect: Rect, kind: Icon, tip: &str, p: Palette) -> Response {
     let response = ui
         .interact(rect, ui.id().with(tip), Sense::click())

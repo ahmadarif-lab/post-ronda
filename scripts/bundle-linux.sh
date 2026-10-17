@@ -14,7 +14,7 @@ cat > "$PKG/share/applications/post-ronda.desktop" <<'DESKTOP'
 [Desktop Entry]
 Type=Application
 Name=Post Ronda
-Comment=Native HTTP client with local collections
+Comment=A fast, native, local-first API client. No account needed.
 Exec=post-ronda
 Icon=post-ronda
 Terminal=false

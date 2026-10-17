@@ -7,7 +7,10 @@ fn main() {
         resource
             .set_icon("assets/PostRonda.ico")
             .set("ProductName", "Post Ronda")
-            .set("FileDescription", "Post Ronda native HTTP client");
+            .set(
+                "FileDescription",
+                "Post Ronda: A fast, native, local-first API client. No account needed.",
+            );
         resource
             .compile()
             .expect("Windows icon and version resources");

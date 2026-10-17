@@ -385,7 +385,7 @@ impl App {
                     for (id, icon, label) in [
                         (0, Icon::Plus, "New project…"),
                         (1, Icon::Folder, "Open project folder…"),
-                        (2, Icon::Pull, "Import Postman or OpenAPI…"),
+                        (2, Icon::Pull, "Import…"),
                     ] {
                         if menu_item(ui, icon, label, false, p) {
                             chosen = Some(id);
@@ -412,7 +412,7 @@ impl App {
                             ui.close();
                         }
                         Some(2) => {
-                            self.import_collection_file(false);
+                            self.open_import(false);
                             ui.close();
                         }
                         Some(4) => {
@@ -673,7 +673,7 @@ impl App {
         text(
             ui,
             pos2(r.right() - 78., r.center().y),
-            "v0.2.0",
+            concat!("v", env!("CARGO_PKG_VERSION")),
             11.,
             p.muted,
         );
@@ -1128,7 +1128,7 @@ impl App {
                         ui.close();
                     }
                     if menu_item(ui, Icon::Code, "Import cURL…", false, p) {
-                        self.import_open = true;
+                        self.open_import(true);
                         ui.close();
                     }
                     if menu_item(ui, Icon::Pull, "Import into this project…", false, p) {
@@ -1891,14 +1891,107 @@ impl App {
             self.np_import = None;
         }
     }
-    /// Paste a cURL command to turn it into a request (same dialog style as the others).
+    /// Shown once on the very first launch, while there is no project and nothing to open:
+    /// the ways to get started, importing first.
+    fn welcome_dialog(&mut self, ctx: &egui::Context) {
+        let p = self.palette();
+        let open = self.welcome_open;
+        let mut pick = None;
+        let close = modal(ctx, "welcome", open, 640., "", p, |ui| {
+            start_header(
+                ui,
+                "Welcome to Post Ronda",
+                post_ronda::TAGLINE,
+                "GET STARTED",
+                "What would you like to do?",
+                p,
+            );
+            pick = import_cards(ui, p);
+            pick = card_row(
+                ui,
+                112.,
+                &[
+                    (
+                        StartChoice::NewProject,
+                        Icon::Plus,
+                        "Create project",
+                        "Start fresh with a new project folder",
+                    ),
+                    (
+                        StartChoice::NewRequest,
+                        Icon::Send,
+                        "Start with a request",
+                        "Jump right in with a new HTTP request",
+                    ),
+                ],
+                p,
+            )
+            .or(pick);
+            ui.add_space(4.);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("I'll explore on my own").color(p.muted))
+                            .frame(false)
+                            .min_size(vec2(160., 30.)),
+                    )
+                    .on_hover_cursor(eframe::egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    self.welcome_open = false;
+                }
+            });
+        });
+        if let Some(choice) = pick
+            && open
+            && self.start_with(choice)
+        {
+            self.welcome_open = false;
+        }
+        if close && open {
+            self.welcome_open = false;
+        }
+    }
+    /// The one Import dialog, opened from the project menu and ⌘/Ctrl+I: pick where the data
+    /// comes from, and for cURL paste the command right here in the same dialog.
     fn import_dialog(&mut self, ctx: &egui::Context) {
         let p = self.palette();
         let open = self.import_open;
+        let curl_step = self.import_curl;
+        let mut pick = None;
         let mut text = self.curl_text.clone();
         let error = self.import_error.clone();
-        let (mut confirm, mut cancel) = (false, false);
-        let close = modal(ctx, "import-curl", open, 680., "Import cURL", p, |ui| {
+        let (mut confirm, mut back, mut cancel) = (false, false, false);
+        let close = modal(ctx, "import", open, 640., "", p, |ui| {
+            if !curl_step {
+                start_header(
+                    ui,
+                    "Bring your collections over",
+                    "Move in seconds. Nothing leaves your computer.",
+                    "IMPORT",
+                    "Where are you coming from?",
+                    p,
+                );
+                pick = import_cards(ui, p);
+                ui.add_space(4.);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("Cancel").color(p.muted))
+                                .frame(false)
+                                .min_size(vec2(72., 30.)),
+                        )
+                        .on_hover_cursor(eframe::egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        cancel = true;
+                    }
+                });
+                return;
+            }
+            ui.add_space(8.);
+            ui.label(RichText::new("IMPORT").size(11.).strong().color(p.gold));
+            ui.label(RichText::new("Import from cURL").size(17.));
             ui.label(
                 RichText::new(
                     "Paste a cURL command, for example from the browser: Network → Copy as cURL.",
@@ -1948,18 +2041,33 @@ impl App {
                 }
                 if ui
                     .add(
-                        egui::Button::new("Cancel")
+                        egui::Button::new(RichText::new("Back").color(p.muted))
                             .frame(false)
                             .min_size(vec2(72., 30.)),
                     )
                     .on_hover_cursor(eframe::egui::CursorIcon::PointingHand)
                     .clicked()
                 {
-                    cancel = true;
+                    back = true;
                 }
             });
         });
         self.curl_text = text;
+        if let Some(choice) = pick
+            && open
+        {
+            if choice == StartChoice::Curl {
+                // cURL is a step of this dialog, not another one.
+                self.import_curl = true;
+                self.import_error.clear();
+            } else if self.start_with(choice) {
+                self.import_open = false;
+            }
+        }
+        if back && open {
+            self.import_curl = false;
+            self.import_error.clear();
+        }
         if confirm && open {
             match curl::parse(&self.curl_text) {
                 Ok(mut request) => {
@@ -4098,7 +4206,7 @@ impl App {
                     self.new_request();
                 }
                 if ui.button("Import cURL").clicked() {
-                    self.import_open = true;
+                    self.open_import(true);
                 }
                 if ui.button("Open Collection").clicked() {
                     self.open_project();
@@ -4351,11 +4459,7 @@ impl App {
             ui.vertical(|ui| {
                 ui.add_space(10.);
                 ui.label(RichText::new("Post Ronda").size(20.).strong());
-                ui.label(
-                    RichText::new("A native HTTP client. Local collections, no account.")
-                        .size(12.5)
-                        .color(p.muted),
-                );
+                ui.label(RichText::new(post_ronda::TAGLINE).size(12.5).color(p.muted));
             });
         });
         ui.add_space(24.);
@@ -5555,6 +5659,7 @@ impl App {
         self.delete_dialog(ctx);
         self.close_dialog(ctx);
         self.import_dialog(ctx);
+        self.welcome_dialog(ctx);
         self.project_dialog(ctx);
         self.app_settings_dialog(ctx);
         self.project_settings_dialog(ctx);
@@ -5617,29 +5722,32 @@ fn modal(
                     let inner = width - 2.;
                     ui.set_width(inner);
                     ui.spacing_mut().item_spacing = vec2(8., 8.);
-                    let (head, _) = ui.allocate_exact_size(vec2(inner, 46.), Sense::hover());
-                    text(
-                        ui,
-                        pos2(head.left() + 16., head.center().y),
-                        title,
-                        14.,
-                        p.text,
-                    );
-                    if icon_button(
-                        ui,
-                        Rect::from_center_size(
-                            pos2(head.right() - 24., head.center().y),
-                            vec2(26., 26.),
-                        ),
-                        Icon::Close,
-                        "Close",
-                        p,
-                    )
-                    .clicked()
-                    {
-                        close = open;
+                    // A dialog without a title (the welcome screen) has no header bar either.
+                    if !title.is_empty() {
+                        let (head, _) = ui.allocate_exact_size(vec2(inner, 46.), Sense::hover());
+                        text(
+                            ui,
+                            pos2(head.left() + 16., head.center().y),
+                            title,
+                            14.,
+                            p.text,
+                        );
+                        if icon_button(
+                            ui,
+                            Rect::from_center_size(
+                                pos2(head.right() - 24., head.center().y),
+                                vec2(26., 26.),
+                            ),
+                            Icon::Close,
+                            "Close",
+                            p,
+                        )
+                        .clicked()
+                        {
+                            close = open;
+                        }
+                        line(ui, head.left_bottom(), head.right_bottom(), p);
                     }
-                    line(ui, head.left_bottom(), head.right_bottom(), p);
                     egui::Frame::new().inner_margin(16.).show(ui, |ui| {
                         ui.set_width(inner - 32.);
                         body(ui);
@@ -7273,6 +7381,209 @@ fn option_card(ui: &mut Ui, selected: bool, title: &str, detail: &str, p: Palett
     );
     res.clicked()
 }
+#[derive(Clone, Copy, PartialEq)]
+enum CardLook {
+    /// The suggested choice: wide, with the accent colour around it.
+    Featured,
+    /// Icon on the left, text beside it.
+    Row,
+    /// Icon on top, text centred below it.
+    Stacked,
+}
+/// Logo, centred title and subtitle, then a small caption and a question: the top of the
+/// welcome screen and of the import chooser.
+fn start_header(
+    ui: &mut Ui,
+    title: &str,
+    subtitle: &str,
+    eyebrow: &str,
+    question: &str,
+    p: Palette,
+) {
+    let width = ui.available_width();
+    ui.add_space(8.);
+    let (logo, _) = ui.allocate_exact_size(vec2(width, 76.), Sense::hover());
+    style::app_logo(ui, Rect::from_center_size(logo.center(), vec2(76., 76.)));
+    ui.add_space(4.);
+    for (s, size, color) in [(title, 24., p.text), (subtitle, 13., p.muted)] {
+        let (rect, _) = ui.allocate_exact_size(vec2(width, size + 8.), Sense::hover());
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            s,
+            FontId::proportional(size),
+            color,
+        );
+    }
+    ui.add_space(14.);
+    ui.label(RichText::new(eyebrow).size(11.).strong().color(p.gold));
+    ui.label(RichText::new(question).size(17.));
+    ui.add_space(2.);
+}
+/// One row of cards across the full width: a single card is featured, two share the row.
+fn card_row(
+    ui: &mut Ui,
+    height: f32,
+    cards: &[(StartChoice, Icon, &str, &str)],
+    p: Palette,
+) -> Option<StartChoice> {
+    let width = ui.available_width();
+    let gap = 10.;
+    let (area, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let each = if cards.len() == 1 {
+        width
+    } else {
+        (width - gap) / 2.
+    };
+    let mut picked = None;
+    for (i, (choice, icon, title, detail)) in cards.iter().enumerate() {
+        let rect = Rect::from_min_size(
+            area.min + vec2(i as f32 * (each + gap), 0.),
+            vec2(each, height),
+        );
+        let look = match cards.len() {
+            1 => CardLook::Featured,
+            _ if height > 90. => CardLook::Stacked,
+            _ => CardLook::Row,
+        };
+        if choice_card(ui, rect, *icon, title, detail, look, p) {
+            picked = Some(*choice);
+        }
+    }
+    picked
+}
+/// The three ways to import, laid out the same wherever they are offered.
+fn import_cards(ui: &mut Ui, p: Palette) -> Option<StartChoice> {
+    let postman = card_row(
+        ui,
+        68.,
+        &[(
+            StartChoice::Postman,
+            Icon::Pull,
+            "Import from Postman",
+            "Bring your Postman collections over in seconds",
+        )],
+        p,
+    );
+    let apps = card_row(
+        ui,
+        68.,
+        &[
+            (
+                StartChoice::Insomnia,
+                Icon::Moon,
+                "Import from Insomnia",
+                "Bring your Insomnia collections over",
+            ),
+            (
+                StartChoice::Bruno,
+                Icon::Folder,
+                "Import from Bruno",
+                "Open a Bruno collection folder",
+            ),
+        ],
+        p,
+    );
+    let formats = card_row(
+        ui,
+        68.,
+        &[
+            (
+                StartChoice::OpenApi,
+                Icon::Book,
+                "Import from OpenAPI",
+                "Generate a collection from a spec",
+            ),
+            (
+                StartChoice::Curl,
+                Icon::Code,
+                "Import from cURL",
+                "Paste a command, get a request",
+            ),
+        ],
+        p,
+    );
+    postman.or(apps).or(formats)
+}
+/// A clickable card for one way to start: an icon in a tinted square, a title and a line of
+/// detail, drawn inside `rect`.
+fn choice_card(
+    ui: &mut Ui,
+    rect: Rect,
+    icon: Icon,
+    title: &str,
+    detail: &str,
+    look: CardLook,
+    p: Palette,
+) -> bool {
+    let res = ui
+        .interact(rect, ui.id().with(("choice-card", title)), Sense::click())
+        .on_hover_cursor(eframe::egui::CursorIcon::PointingHand);
+    let accent = look == CardLook::Featured || res.hovered();
+    ui.painter().rect(
+        rect,
+        8,
+        if look == CardLook::Featured {
+            p.gold.gamma_multiply(0.10)
+        } else if res.hovered() {
+            p.hover
+        } else {
+            p.bg
+        },
+        Stroke::new(1., if accent { p.gold } else { p.border }),
+        StrokeKind::Inside,
+    );
+    let tile = 38.;
+    let clip = ui.painter().with_clip_rect(rect.shrink(4.));
+    let (title_size, detail_size) = (14.5, 12.);
+    if look == CardLook::Stacked {
+        let tile_rect = Rect::from_center_size(
+            pos2(rect.center().x, rect.top() + 22. + tile / 2.),
+            vec2(tile, tile),
+        );
+        ui.painter()
+            .rect_filled(tile_rect, 8, p.gold.gamma_multiply(0.16));
+        style::icon_sized(ui, tile_rect, icon, p.gold, 20.);
+        clip.text(
+            pos2(rect.center().x, tile_rect.bottom() + 10.),
+            Align2::CENTER_TOP,
+            title,
+            FontId::proportional(title_size),
+            p.text,
+        );
+        clip.text(
+            pos2(rect.center().x, tile_rect.bottom() + 32.),
+            Align2::CENTER_TOP,
+            detail,
+            FontId::proportional(detail_size),
+            p.muted,
+        );
+    } else {
+        let tile_rect = Rect::from_center_size(
+            pos2(rect.left() + 16. + tile / 2., rect.center().y),
+            vec2(tile, tile),
+        );
+        ui.painter()
+            .rect_filled(tile_rect, 8, p.gold.gamma_multiply(0.16));
+        style::icon_sized(ui, tile_rect, icon, p.gold, 20.);
+        let x = tile_rect.right() + 14.;
+        clip.text(
+            pos2(x, rect.center().y - 10.),
+            Align2::LEFT_CENTER,
+            title,
+            FontId::proportional(title_size),
+            p.text,
+        );
+        clip.text(
+            pos2(x, rect.center().y + 11.),
+            Align2::LEFT_CENTER,
+            detail,
+            FontId::proportional(detail_size),
+            p.muted,
+        );
+    }
+    res.clicked()
+}
 fn rows_to_bulk(rows: &[Header]) -> String {
     rows.iter()
         .map(|h| {
@@ -7580,6 +7891,19 @@ mod tests {
         drop_files(&ctx, &mut app, &[&junk]);
         assert!(!app.np_open);
         assert_eq!(app.environments.items.len(), before);
+        // A Bruno collection folder is imported; any other folder is opened as a project.
+        let bruno = dir.path().join("bruno-collection");
+        std::fs::create_dir_all(&bruno).unwrap();
+        std::fs::write(bruno.join("bruno.json"), r#"{"version":"1","name":"Bru"}"#).unwrap();
+        std::fs::write(
+            bruno.join("ping.bru"),
+            "meta {\n  name: Ping\n  seq: 1\n}\n\nget {\n  url: http://localhost/ping\n}\n",
+        )
+        .unwrap();
+        let before_project = app.project.clone();
+        drop_files(&ctx, &mut app, &[&bruno]);
+        assert!(app.np_open && app.np_name == "Bru");
+        assert_eq!(app.project, before_project, "not opened as a project");
     }
 
     #[test]
@@ -7652,6 +7976,8 @@ mod tests {
         app.selected = 0;
         app.dirty = None;
         app.response = None;
+        // The first-run screen is covered by its own tests; it would sit over everything else.
+        app.welcome_open = false;
         app
     }
     fn draw(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
@@ -8490,7 +8816,7 @@ mod tests {
             modifiers: egui::Modifiers::COMMAND,
         };
         let before = app.collection.requests.len();
-        app.import_open = true;
+        app.open_import(true);
         app.curl_text = "this is not curl".into();
         draw(&ctx, &mut app, vec![]);
         draw(&ctx, &mut app, vec![command_enter()]);
@@ -8506,6 +8832,54 @@ mod tests {
         assert_eq!(imported.url, "https://a.test/items");
         assert_eq!(app.tab, 1, "a request with a body opens on the Body tab");
     }
+    #[test]
+    fn welcome_choices_open_what_they_promise_and_dismiss_the_screen() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        app.welcome_open = true;
+        draw(&ctx, &mut app, vec![]);
+        assert!(app.welcome_open, "stays up until the user decides");
+        assert!(app.start_with(StartChoice::Curl));
+        assert!(
+            app.import_open && app.import_curl,
+            "cURL is a step of Import"
+        );
+        app.import_open = false;
+        assert!(app.start_with(StartChoice::NewProject));
+        assert!(app.np_open && app.np_import.is_none());
+        app.np_open = false;
+        app.focus_url = false;
+        assert!(app.start_with(StartChoice::NewRequest));
+        assert!(app.focus_url);
+        // Escape is the same as "I'll explore on my own".
+        let escape = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: Some(egui::Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        draw(&ctx, &mut app, vec![escape]);
+        assert!(!app.welcome_open);
+    }
+
+    #[test]
+    fn command_i_opens_the_import_dialog_on_its_list_of_sources() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        app.import_curl = true;
+        let command_i = egui::Event::Key {
+            key: egui::Key::I,
+            physical_key: Some(egui::Key::I),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        draw(&ctx, &mut app, vec![command_i]);
+        assert!(app.import_open, "one dialog for every kind of import");
+        assert!(!app.import_curl, "it starts on the list, not on cURL");
+    }
+
     #[test]
     fn search_shortcuts_open_the_palette_and_focus_the_sidebar_filter() {
         let ctx = egui::Context::default();
