@@ -6,7 +6,23 @@ A fast, native API client with local-first projects. No account, no cloud sync, 
 
 Post Ronda is written in Rust with [egui](https://github.com/emilk/egui). A project is a plain folder on disk, so your collections are easy to read, review and keep in Git.
 
+Inspired by [Bruno](https://www.usebruno.com/)'s local, Git-friendly workflow and [Postman](https://www.postman.com/)'s familiar request editor. Post Ronda takes a native Rust approach: no bundled browser engine, Chromium processes, or JavaScript runtime. It is built for everyday HTTP work on machines where memory matters, including older laptops and computers with limited RAM.
+
 ![Post Ronda](docs/screenshot.png)
+
+## Tested hardware and benchmark
+
+Tested on a **MacBook Air M4 (10-core CPU, 16 GB RAM, Apple Silicon)** running **macOS 27.0.1**. The comparison uses the installed desktop apps: **Post Ronda 0.2.1**, **Bruno 4.2.1**, and **Postman 12.32.4**.
+
+| Desktop client | First visible window | Idle RSS | Installed app bundle |
+| --- | ---: | ---: | ---: |
+| **Post Ronda 0.2.1** | **0.39 s** | **85.8 MiB** | **6.62 MiB** |
+| Bruno 4.2.1 | 2.22 s | 394.4 MiB | 499.39 MiB |
+| Postman 12.32.4 | 0.96 s | 461.0 MiB | 462.81 MiB |
+
+Measured October 17, 2026; medians from three fresh-profile launches with default first-run screens. Idle RSS includes helper processes and can count shared memory more than once; it is not physical RAM usage. First-window time does not measure editor readiness.
+
+See the [benchmark results and methodology](docs/benchmark.md) for resource measurements, a workflow comparison, raw samples, and the script to repeat the test. Lower-spec computers are a design target; they have not yet been benchmarked.
 
 ## Features
 
