@@ -2,6 +2,7 @@ pub mod codegen;
 pub mod collection;
 pub mod curl;
 pub mod environment;
+pub mod html;
 pub mod http;
 pub mod process;
 pub mod update;

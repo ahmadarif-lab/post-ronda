@@ -2716,6 +2716,142 @@ impl App {
         }
         (!out.is_empty()).then_some(out)
     }
+    /// An HTML response read like a page: headings, paragraphs, lists, links, code and plain
+    /// tables, without the styling, scripts or images a browser would add.
+    fn html_preview(&mut self, ui: &mut Ui, p: Palette) {
+        use post_ronda::html::{Block, Span};
+        let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        if std::mem::take(&mut self.scroll_response_top) {
+            area = area.vertical_scroll_offset(0.);
+        }
+        let spans_ui = |ui: &mut Ui, spans: &[Span], size: f32, color: Color32| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(0., 2.);
+                for span in spans {
+                    let mut rich = egui::RichText::new(&span.text).size(size).color(color);
+                    if span.bold {
+                        rich = rich.strong();
+                    }
+                    if span.italic {
+                        rich = rich.italics();
+                    }
+                    if span.code {
+                        rich = rich
+                            .family(egui::FontFamily::Monospace)
+                            .background_color(p.hover);
+                    }
+                    match &span.link {
+                        Some(href) => {
+                            let link = ui
+                                .add(egui::Link::new(rich.color(p.blue)))
+                                .on_hover_text(href)
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if link.clicked() {
+                                return Some(href.clone());
+                            }
+                        }
+                        None => {
+                            ui.label(rich);
+                        }
+                    }
+                }
+                None
+            })
+            .inner
+        };
+        let mut open = None;
+        area.show(ui, |ui| {
+            ui.add_space(8.);
+            ui.set_max_width(ui.available_width().min(900.));
+            for block in &self.html_blocks {
+                match block {
+                    Block::Heading(level, spans) => {
+                        let size = [26., 22., 18., 16., 14., 13.][(*level as usize - 1).min(5)];
+                        ui.add_space(8.);
+                        if let Some(href) = spans_ui(ui, spans, size, p.text) {
+                            open = Some(href);
+                        }
+                        ui.add_space(4.);
+                    }
+                    Block::Paragraph(spans) => {
+                        if let Some(href) = spans_ui(ui, spans, 13., p.text) {
+                            open = Some(href);
+                        }
+                        ui.add_space(6.);
+                    }
+                    Block::Quote(spans) => {
+                        let top = ui.cursor().top();
+                        ui.horizontal(|ui| {
+                            ui.add_space(14.);
+                            ui.vertical(|ui| {
+                                if let Some(href) = spans_ui(ui, spans, 13., p.muted) {
+                                    open = Some(href);
+                                }
+                            });
+                        });
+                        let bar = Rect::from_min_max(
+                            pos2(ui.min_rect().left() + 2., top),
+                            pos2(ui.min_rect().left() + 5., ui.cursor().top()),
+                        );
+                        ui.painter().rect_filled(bar, 1, p.border);
+                        ui.add_space(6.);
+                    }
+                    Block::Item {
+                        depth,
+                        marker,
+                        spans,
+                    } => {
+                        ui.horizontal_top(|ui| {
+                            ui.add_space(12. + 18. * *depth as f32);
+                            ui.label(RichText::new(marker).size(13.).color(p.muted));
+                            ui.vertical(|ui| {
+                                if let Some(href) = spans_ui(ui, spans, 13., p.text) {
+                                    open = Some(href);
+                                }
+                            });
+                        });
+                        ui.add_space(2.);
+                    }
+                    Block::Pre(code) => {
+                        egui::Frame::NONE
+                            .fill(p.field)
+                            .corner_radius(6)
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(code)
+                                            .size(12.)
+                                            .family(egui::FontFamily::Monospace)
+                                            .color(p.text),
+                                    )
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                );
+                            });
+                        ui.add_space(6.);
+                    }
+                    Block::Rule => {
+                        ui.add_space(4.);
+                        ui.separator();
+                        ui.add_space(4.);
+                    }
+                }
+            }
+            if self.html_blocks.is_empty() {
+                ui.label(
+                    RichText::new(
+                        "Nothing to show: the page has no text. Pick Raw text to read its source.",
+                    )
+                    .size(13.)
+                    .color(p.muted),
+                );
+            }
+        });
+        if let Some(url) = open {
+            self.open_url(&url);
+        }
+    }
     /// Response body with long lines wrapped to the pane, so everything stays visible and
     /// selectable without scrolling sideways. Only the lines in view are laid out.
     fn wrapped_body(&mut self, ui: &mut Ui, p: Palette) {
@@ -2741,6 +2877,9 @@ impl App {
         let find_current = self.find_matches.get(self.find_index).copied();
         let find_matches = std::mem::take(&mut self.find_matches);
         let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        if std::mem::take(&mut self.scroll_response_top) {
+            area = area.vertical_scroll_offset(0.);
+        }
         if std::mem::take(&mut self.find_jump)
             && let Some((line, _, _)) = find_current
         {
@@ -2973,18 +3112,28 @@ impl App {
             .map(|path| {
                 std::fs::write(&path, &response.raw)
                     .map(|_| {
-                        format!(
+                        let saved = format!(
                             "Saved {}",
                             path.file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_default()
-                        )
+                        );
+                        (saved, path)
                     })
                     .map_err(|e| e.to_string())
             });
+        let binary = response.binary;
         self.response = Some(response);
-        if let Some(result) = outcome {
-            self.notify(result);
+        match outcome {
+            Some(Ok((saved, path))) => {
+                self.notify(Ok(saved));
+                // A file is not something to read here: show where it went.
+                if binary {
+                    self.reveal_path(&path);
+                }
+            }
+            Some(Err(e)) => self.notify(Err(e)),
+            None => {}
         }
     }
     /// Puts the caret at the end of the URL with nothing selected. The text field keeps its old
@@ -3819,7 +3968,13 @@ impl App {
             12.,
             p.text,
         );
-        let format_label = if self.pretty { "JSON" } else { "Raw" };
+        let format_label = if self.response_is_html {
+            if self.html_render { "HTML" } else { "Raw" }
+        } else if self.pretty {
+            "JSON"
+        } else {
+            "Raw"
+        };
         let format_width = ui
             .painter()
             .layout_no_wrap(format_label.into(), FontId::proportional(13.), p.text)
@@ -3843,10 +3998,25 @@ impl App {
             egui::Popup::menu(&response).show(|ui| {
                 ui.set_width(150.);
                 ui.spacing_mut().item_spacing.y = 1.;
-                for (value, label) in [(true, "Pretty JSON"), (false, "Raw text")] {
-                    if menu_choice(ui, label, self.pretty == value, None, p) {
-                        self.pretty = value;
+                let html = self.response_is_html;
+                let first = if html { "HTML" } else { "Pretty JSON" };
+                for (value, label) in [(true, first), (false, "Raw text")] {
+                    let current = if html { self.html_render } else { self.pretty };
+                    if menu_choice(ui, label, current == value, None, p) {
+                        if html {
+                            self.html_render = value;
+                        } else {
+                            self.pretty = value;
+                        }
                         self.response_body();
+                        self.scroll_response_top = true;
+                        ui.close();
+                    }
+                }
+                if html {
+                    menu_gap(ui);
+                    if menu_choice(ui, "Open in browser", false, None, p) {
+                        self.open_html_in_browser();
                         ui.close();
                     }
                 }
@@ -3963,6 +4133,10 @@ impl App {
                 );
                 return;
             }
+            if self.response_is_html && self.html_render {
+                self.html_preview(ui, p);
+                return;
+            }
             if self.prefs.wrap_response {
                 self.wrapped_body(ui, p);
                 return;
@@ -3972,6 +4146,9 @@ impl App {
             let find_current = self.find_matches.get(self.find_index).copied();
             let find_matches = std::mem::take(&mut self.find_matches);
             let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
+            if std::mem::take(&mut self.scroll_response_top) {
+                area = area.scroll_offset(vec2(0., 0.));
+            }
             if std::mem::take(&mut self.find_jump)
                 && let Some((line, _, _)) = find_current
             {
@@ -4057,7 +4234,11 @@ impl App {
     }
     /// The find bar floating at the top right of the response body.
     fn find_bar(&mut self, ui: &mut Ui, body: Rect, p: Palette) {
-        if !self.find_open || self.response_tab != 0 || self.response.is_none() {
+        if !self.find_open
+            || self.response_tab != 0
+            || self.response.is_none()
+            || (self.response_is_html && self.html_render)
+        {
             return;
         }
         if self.find_for != self.find_query {
@@ -4077,7 +4258,9 @@ impl App {
             TextEdit::singleline(&mut self.find_query)
                 .hint_text("Find in response")
                 .frame(egui::Frame::NONE)
-                .margin(egui::Margin::symmetric(4, 5))
+                .margin(egui::Margin::symmetric(4, 0))
+                .min_size(edit_rect.size())
+                .vertical_align(Align::Center)
                 .font(FontId::proportional(13.)),
         );
         if std::mem::take(&mut self.find_focus) {
@@ -7676,6 +7859,41 @@ mod tests {
         assert_eq!(app.collection.requests[0].url, "http://x/{{token}}");
     }
 
+    #[test]
+    fn html_responses_render_as_a_page_or_show_their_source() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        app.response = Some(post_ronda::http::Response {
+            status: "200 OK".into(),
+            headers: String::new(),
+            body:
+                "<html><body><h1>Hi</h1><p>A <a href=\"https://x.test\">link</a></p></body></html>"
+                    .into(),
+            raw: vec![],
+            elapsed: Duration::ZERO,
+            bytes: 0,
+            truncated: false,
+            binary: false,
+            content_type: "text/html".into(),
+            file_name: String::new(),
+        });
+        app.response_body();
+        assert!(app.response_is_html);
+        assert_eq!(app.html_blocks.len(), 2);
+        draw(&ctx, &mut app, vec![]);
+        draw(&ctx, &mut app, vec![]);
+        // Raw text keeps the source and drops the rendered blocks.
+        app.html_render = false;
+        app.response_body();
+        assert!(app.html_blocks.is_empty());
+        assert!(app.response_text.starts_with("<html>"));
+        draw(&ctx, &mut app, vec![]);
+        // JSON stays on its own pretty/raw switch.
+        app.response.as_mut().unwrap().content_type = "application/json".into();
+        app.response.as_mut().unwrap().body = "{\"a\":1}".into();
+        app.response_body();
+        assert!(!app.response_is_html);
+    }
     #[test]
     fn find_in_response_lists_matches_case_insensitively() {
         let ctx = egui::Context::default();

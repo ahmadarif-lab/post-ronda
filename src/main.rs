@@ -121,6 +121,12 @@ struct App {
     response: Option<Response>,
     response_text: String,
     pretty: bool,
+    /// The response is an HTML page, which can be read rendered or as its source.
+    response_is_html: bool,
+    html_render: bool,
+    /// Address the last request went to, after variables were filled in.
+    sent_url: String,
+    html_blocks: Vec<post_ronda::html::Block>,
     notice: String,
     error: bool,
     /// The Import dialog is open.
@@ -174,6 +180,8 @@ struct App {
     find_matches: Vec<(usize, usize, usize)>,
     find_index: usize,
     find_jump: bool,
+    /// A new response arrived: its body starts at the top instead of where the last one was scrolled.
+    scroll_response_top: bool,
     response_rect: egui::Rect,
     /// Selected request and tab count when the tab strip last scrolled the active tab into view.
     tab_scroll_seen: (usize, usize),
@@ -361,6 +369,10 @@ impl App {
             response: None,
             response_text: String::new(),
             pretty: true,
+            response_is_html: false,
+            html_render: true,
+            sent_url: String::new(),
+            html_blocks: vec![],
             notice,
             error,
             import_open: false,
@@ -405,6 +417,7 @@ impl App {
             find_matches: vec![],
             find_index: 0,
             find_jump: false,
+            scroll_response_top: false,
             response_rect: egui::Rect::NOTHING,
             tab_scroll_seen: (usize::MAX, 0),
             tabs: vec![0],
@@ -1278,6 +1291,7 @@ impl App {
                 return;
             }
         };
+        self.sent_url = post_ronda::with_scheme(&executable.url);
         self.history.insert(0, r.clone());
         self.history.truncate(50);
         save_history(&self.project, &self.history);
@@ -1573,6 +1587,9 @@ impl App {
         if !(url.starts_with("https://") || url.starts_with("http://")) {
             return;
         }
+        self.open_external(url);
+    }
+    fn open_external(&mut self, target: &str) {
         let mut command = if cfg!(target_os = "macos") {
             post_ronda::process::command("open")
         } else if cfg!(target_os = "windows") {
@@ -1580,9 +1597,35 @@ impl App {
         } else {
             post_ronda::process::command("xdg-open")
         };
-        command.arg(url);
+        command.arg(target);
         if let Err(e) = command.spawn() {
             self.notify(Err(format!("Could not open the browser: {e}")));
+        }
+    }
+    /// Shows the HTML response in the default browser, exactly as a page. The address it came
+    /// from is set as the base, so relative images, styles and links still resolve.
+    fn open_html_in_browser(&mut self) {
+        let Some(response) = &self.response else {
+            return;
+        };
+        let mut html = response.body.clone();
+        if !html.to_ascii_lowercase().contains("<base ") && !self.sent_url.is_empty() {
+            let base = format!(
+                "<base href=\"{}\">",
+                self.sent_url.replace('&', "&amp;").replace('"', "&quot;")
+            );
+            let lower = html.to_ascii_lowercase();
+            let at = lower
+                .find("<head")
+                .and_then(|i| lower[i..].find('>').map(|j| i + j + 1))
+                .unwrap_or(0);
+            html.insert_str(at, &base);
+        }
+        let path =
+            std::env::temp_dir().join(format!("post-ronda-preview-{}.html", std::process::id()));
+        match std::fs::write(&path, html) {
+            Ok(()) => self.open_external(&path.to_string_lossy()),
+            Err(e) => self.notify(Err(format!("Could not write the preview: {e}"))),
         }
     }
     fn reveal_project(&mut self) {
@@ -1592,9 +1635,19 @@ impl App {
         } else {
             self.project.clone()
         };
+        self.reveal_path(&target);
+    }
+    /// Shows `target` in the file manager: selected in its folder where the system can do that,
+    /// otherwise the folder it is in.
+    fn reveal_path(&mut self, target: &std::path::Path) {
+        let folder = if target.is_dir() {
+            target
+        } else {
+            target.parent().unwrap_or(target)
+        };
         let mut command = if cfg!(target_os = "macos") {
             let mut c = post_ronda::process::command("open");
-            c.arg("-R").arg(&target);
+            c.arg("-R").arg(target);
             c
         } else if cfg!(target_os = "windows") {
             let mut c = post_ronda::process::command("explorer");
@@ -1602,7 +1655,7 @@ impl App {
             c
         } else {
             let mut c = post_ronda::process::command("xdg-open");
-            c.arg(&self.project);
+            c.arg(folder);
             c
         };
         if let Err(e) = command.spawn() {
@@ -1976,6 +2029,14 @@ impl App {
                 }
             })
             .unwrap_or_default();
+        self.response_is_html = self.response.as_ref().is_some_and(|r| {
+            !r.binary && post_ronda::html::looks_like_html(&r.content_type, &r.body)
+        });
+        self.html_blocks = if self.response_is_html && self.html_render {
+            post_ronda::html::parse(&self.response_text)
+        } else {
+            vec![]
+        };
         self.code_lines = style::highlight(&self.response_text, self.palette());
         self.code_line_len = self
             .code_lines
@@ -2121,6 +2182,7 @@ impl eframe::App for App {
                         Ok(r) => {
                             self.response = Some(r);
                             self.response_body();
+                            self.scroll_response_top = true;
                             self.notify(Ok("Response received".into()));
                         }
                         Err(e) => {
