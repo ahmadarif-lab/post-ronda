@@ -274,6 +274,7 @@ fn state_dir() -> PathBuf {
     }
 }
 fn main() -> eframe::Result {
+    post_ronda::crashlog::install(state_dir());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Post Ronda")
@@ -331,6 +332,11 @@ impl App {
         let loaded = std::fs::read_to_string(project.join("collection.json"));
         let mut notice = "Ready · Everything stays on your computer".to_owned();
         let mut error = false;
+        if post_ronda::crashlog::take_unseen(&state_dir()) {
+            notice = "The last session ended with a problem. See App settings › About › Crash log"
+                .to_owned();
+            error = true;
+        }
         let collection = match loaded {
             Ok(s) => match collection::import(&s) {
                 Ok(c) => c,
@@ -855,6 +861,7 @@ impl App {
     /// Replaces everything that belongs to the open project; nothing of the previous one
     /// (tabs, drafts, baselines, cached responses, search) is carried over.
     fn load_project(&mut self, path: PathBuf) -> Result<(), String> {
+        post_ronda::crashlog::note(format!("opening project {}", path.display()));
         let (collection, environments, fresh) = Self::read_project(&path)?;
         self.project = path;
         self.collection = collection;
@@ -953,6 +960,10 @@ impl App {
     }
     /// Opens the "New project" dialog, optionally pre-filled with an imported collection.
     fn begin_new_project(&mut self, import: Option<Collection>) {
+        post_ronda::crashlog::note(format!(
+            "import dialog for \"{}\"",
+            import.as_ref().map_or("a new project", |c| c.name.as_str())
+        ));
         self.np_name = import
             .as_ref()
             .map(|c| c.name.clone())
@@ -1090,6 +1101,7 @@ impl App {
                 }
                 continue;
             }
+            post_ronda::crashlog::note(format!("dropped file {name}: reading"));
             let text = match std::fs::read_to_string(&path) {
                 Ok(text) => text,
                 Err(e) => {
@@ -1097,6 +1109,7 @@ impl App {
                     continue;
                 }
             };
+            post_ronda::crashlog::note(format!("dropped file {name}: importing"));
             let is_environment = serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| {
                 (v.get("values").is_some()
                     || v.get("environment")
@@ -1189,6 +1202,7 @@ impl App {
     }
     fn create_project(&mut self) -> Result<(), String> {
         let name = self.np_name.trim().to_owned();
+        post_ronda::crashlog::note(format!("creating project \"{name}\""));
         if name.is_empty() {
             return Err("Give the project a name".into());
         }
@@ -1270,6 +1284,10 @@ impl App {
         if self.running {
             return;
         }
+        post_ronda::crashlog::note(format!(
+            "sending request \"{}\"",
+            self.collection.requests[self.selected].name
+        ));
         // Sending is interaction: the tab stays.
         self.preview = None;
         let r = self.collection.requests[self.selected].clone();
@@ -2298,6 +2316,7 @@ impl eframe::App for App {
         }
     }
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        let _frame = post_ronda::crashlog::Frame::begin();
         let ctx = ui.ctx().clone();
         // What each {{name}} stands for right now: the environment wins over the project.
         let mut known: std::collections::HashMap<String, (String, String)> = Default::default();

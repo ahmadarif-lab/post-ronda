@@ -26,6 +26,10 @@ impl App {
             return;
         }
         if self.selected != index {
+            post_ronda::crashlog::note(format!(
+                "opening request \"{}\"",
+                self.collection.requests[index].name
+            ));
             if let Some(r) = self.response.take() {
                 self.response_cache.insert(self.selected, r);
             }
@@ -4830,6 +4834,39 @@ impl App {
             )
             .wrap(),
         );
+        ui.add_space(22.);
+        ui.label("Crash log");
+        ui.add_space(2.);
+        let log = crate::state_dir().join("crash.log");
+        let written = log.exists();
+        ui.add(
+            egui::Label::new(
+                RichText::new(if written {
+                    "Panics and freezes are written here, with the step the app was on."
+                } else {
+                    "Nothing recorded yet. Panics and freezes are written here when they happen."
+                })
+                .size(12.)
+                .color(p.muted),
+            )
+            .wrap(),
+        );
+        ui.add_space(6.);
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(written, egui::Button::new("Open crash log"))
+                .clicked()
+            {
+                self.open_external(&log.to_string_lossy());
+            }
+            if ui.button(reveal_label()).clicked() {
+                self.reveal_path(&if written {
+                    log.clone()
+                } else {
+                    crate::state_dir()
+                });
+            }
+        });
         ui.add_space(22.);
         ui.label("Telemetry");
         ui.add_space(4.);

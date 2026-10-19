@@ -1,5 +1,6 @@
 pub mod codegen;
 pub mod collection;
+pub mod crashlog;
 pub mod curl;
 pub mod environment;
 pub mod html;
