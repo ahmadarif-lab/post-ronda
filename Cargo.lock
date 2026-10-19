@@ -1846,7 +1846,7 @@ dependencies = [
 
 [[package]]
 name = "post-ronda"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "eframe",
  "image",
