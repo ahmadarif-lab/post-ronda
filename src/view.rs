@@ -2858,7 +2858,11 @@ impl App {
         let font = FontId::monospace(13.);
         let (char_width, row_height) =
             ui.fonts_mut(|f| (f.glyph_width(&font, '0').max(1.), f.row_height(&font)));
-        let gutter = if self.prefs.line_numbers { 35. } else { 0. };
+        let gutter = if self.prefs.line_numbers {
+            gutter_width(35., char_width, self.code_lines.len())
+        } else {
+            0.
+        };
         // Single-line rows keep the 20px rhythm of the unwrapped view.
         let pad = (20. - row_height).max(2.);
         let text_width = (ui.available_width() - gutter - 16.).max(char_width * 8.);
@@ -2899,8 +2903,8 @@ impl App {
                 let top = origin.y + tops[i];
                 if self.prefs.line_numbers {
                     ui.painter().text(
-                        pos2(origin.x + 10., top + pad / 2. + row_height / 2.),
-                        Align2::CENTER_CENTER,
+                        pos2(origin.x + gutter - 14., top + pad / 2. + row_height / 2.),
+                        Align2::RIGHT_CENTER,
                         (i + 1).to_string(),
                         FontId::monospace(13.),
                         p.muted,
@@ -3631,7 +3635,15 @@ impl App {
         // Line numbers stay put while the text scrolls sideways: the gutter is drawn outside the
         // scroll area, using the screen position of each line.
         let area = ui.available_rect_before_wrap();
-        let gutter = if self.prefs.line_numbers { 38. } else { 0. };
+        let gutter = if self.prefs.line_numbers {
+            let lines = self.collection.requests[self.selected]
+                .body
+                .split('\n')
+                .count();
+            gutter_width(38., 8., lines)
+        } else {
+            0.
+        };
         let gutter_rect = Rect::from_min_size(area.min, vec2(gutter, area.height()));
         let editor_rect = Rect::from_min_max(pos2(area.left() + gutter, area.top()), area.max);
         let gutter_painter = ui.painter().with_clip_rect(gutter_rect);
@@ -4154,10 +4166,16 @@ impl App {
             {
                 area = area.vertical_scroll_offset((line as f32 * 20. - 80.).max(0.));
             }
-            let scrolled = area.show_rows(ui, 20., self.code_lines.len(), |ui, range| {
+            let total_lines = self.code_lines.len();
+            let char_width = ui.fonts_mut(|f| f.glyph_width(&FontId::monospace(13.), '0').max(1.));
+            let scrolled = area.show_rows(ui, 20., total_lines, |ui, range| {
                 ui.spacing_mut().item_spacing.y = 0.;
                 let mut state = CodePointer::new(ui);
-                let offset = if self.prefs.line_numbers { 35. } else { 0. };
+                let offset = if self.prefs.line_numbers {
+                    gutter_width(35., char_width, total_lines)
+                } else {
+                    0.
+                };
                 for i in range {
                     let galley = code_galley(ui, self.code_lines[i].clone(), None);
                     // Wide enough for the longest line so the pane scrolls sideways.
@@ -4165,8 +4183,8 @@ impl App {
                     let (rect, _) = ui.allocate_exact_size(vec2(width, 20.), Sense::hover());
                     if self.prefs.line_numbers {
                         ui.painter().text(
-                            pos2(rect.left() + 10., rect.center().y),
-                            Align2::CENTER_CENTER,
+                            pos2(rect.left() + offset - 14., rect.center().y),
+                            Align2::RIGHT_CENTER,
                             (i + 1).to_string(),
                             FontId::monospace(13.),
                             p.muted,
@@ -6767,6 +6785,11 @@ fn menu_choice(
     res.on_hover_cursor(eframe::egui::CursorIcon::PointingHand)
         .clicked()
 }
+/// Width of the line-number column: `base` fits two digits, each further digit widens it so
+/// numbers in the hundreds or thousands are not cut off.
+fn gutter_width(base: f32, char_width: f32, lines: usize) -> f32 {
+    base + lines.max(1).to_string().len().saturating_sub(2) as f32 * char_width
+}
 fn menu_gap(ui: &mut Ui) {
     ui.add_space(2.);
     ui.separator();
@@ -8156,6 +8179,13 @@ mod tests {
         assert_eq!(word_range("", 0), (0, 0));
     }
 
+    #[test]
+    fn line_number_column_grows_with_the_digits() {
+        assert_eq!(gutter_width(35., 8., 1), 35.);
+        assert_eq!(gutter_width(35., 8., 99), 35.);
+        assert_eq!(gutter_width(35., 8., 100), 43.);
+        assert_eq!(gutter_width(35., 8., 12_345), 59.);
+    }
     #[test]
     fn variables_are_found_and_split_out_of_text() {
         let spans = variable_spans("{{ base_url }}/a/{{id}}?x={{open");
