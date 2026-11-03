@@ -2425,6 +2425,17 @@ impl eframe::App for App {
                 self.focus_filter = true;
             }
         }
+        // Cmd/Ctrl+C copies the text selected in the response viewer. The viewer paints its own
+        // selection, so egui's text fields never see it; their own copy keeps working because
+        // this only runs while no field has the keyboard.
+        if !ctx.egui_wants_keyboard_input()
+            && self.code_sel.is_some()
+            && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)))
+            && let Some(selected) = self.selected_code()
+        {
+            ctx.copy_text(selected);
+            self.notify(Ok("Copied to clipboard!".into()));
+        }
         if !self.git_running
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W))
         {

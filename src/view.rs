@@ -2705,7 +2705,7 @@ impl App {
         }
     }
     /// The selected response text, if any.
-    fn selected_code(&self) -> Option<String> {
+    pub(crate) fn selected_code(&self) -> Option<String> {
         let (a, b) = self.code_sel?;
         let (start, end) = if a <= b { (a, b) } else { (b, a) };
         let mut out = String::new();
@@ -6374,6 +6374,16 @@ impl CodePointer {
         if pos.is_some_and(|p| clip.contains(p)) {
             ui.set_cursor_icon(egui::CursorIcon::Text);
         }
+        // The viewer paints its own selection, so a text field that still has the keyboard
+        // (a caret in the body, URL...) would swallow Cmd/Ctrl+C. Starting a selection here
+        // takes the keyboard away from it.
+        if pressed.is_some() {
+            ui.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
         Self {
             pressed,
             down,
@@ -8184,6 +8194,80 @@ mod tests {
         assert_eq!(app.project, before_project, "not opened as a project");
     }
 
+    #[test]
+    fn copy_shortcut_copies_response_selection_even_with_a_field_focused() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        let body = "{\"serialNumber\": \"GD1764999\",\n \"name\": \"GD1764999\"}";
+        app.response = Some(post_ronda::http::Response {
+            status: "200 OK".into(),
+            headers: String::new(),
+            body: body.into(),
+            raw: vec![],
+            elapsed: Duration::ZERO,
+            bytes: 0,
+            truncated: false,
+            binary: false,
+            content_type: "application/json".into(),
+            file_name: String::new(),
+        });
+        app.pretty = false;
+        app.response_body();
+        let run = |ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0., 0.), vec2(1440., 900.))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.ui(ui, &mut eframe::Frame::_new_kittest()));
+            out.textures_delta.clear();
+            out.platform_output
+                .commands
+                .iter()
+                .filter_map(|c| match c {
+                    egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        run(&ctx, &mut app, vec![]);
+        run(&ctx, &mut app, vec![]);
+        // Put the keyboard in a text field, as a caret in the request body does.
+        let tab = |pressed| egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: Some(egui::Key::Tab),
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(&ctx, &mut app, vec![tab(true), tab(false)]);
+        run(&ctx, &mut app, vec![]);
+        let focused = ctx.memory(|m| m.focused());
+        eprintln!("focused before select: {focused:?}, rect {:?}", app.response_rect);
+        let r = app.response_rect;
+        let a = pos2(r.left() + 70., r.top() + 60.);
+        let b = pos2(r.left() + 260., r.top() + 60.);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(&ctx, &mut app, vec![egui::Event::PointerMoved(a)]);
+        run(&ctx, &mut app, vec![button(a, true)]);
+        run(&ctx, &mut app, vec![egui::Event::PointerMoved(b)]);
+        run(&ctx, &mut app, vec![egui::Event::PointerMoved(b)]);
+        run(&ctx, &mut app, vec![button(b, false)]);
+        eprintln!(
+            "sel {:?} text {:?} focused after: {:?}",
+            app.code_sel,
+            app.selected_code(),
+            ctx.memory(|m| m.focused())
+        );
+        let copied = run(&ctx, &mut app, vec![egui::Event::Copy]);
+        assert!(app.selected_code().is_some(), "drag selected nothing");
+        assert_eq!(copied, vec![app.selected_code().unwrap()]);
+    }
     #[test]
     fn response_selection_spans_lines_and_words() {
         let ctx = egui::Context::default();
