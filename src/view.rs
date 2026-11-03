@@ -8242,8 +8242,6 @@ mod tests {
         };
         run(&ctx, &mut app, vec![tab(true), tab(false)]);
         run(&ctx, &mut app, vec![]);
-        let focused = ctx.memory(|m| m.focused());
-        eprintln!("focused before select: {focused:?}, rect {:?}", app.response_rect);
         let r = app.response_rect;
         let a = pos2(r.left() + 70., r.top() + 60.);
         let b = pos2(r.left() + 260., r.top() + 60.);
@@ -8258,12 +8256,6 @@ mod tests {
         run(&ctx, &mut app, vec![egui::Event::PointerMoved(b)]);
         run(&ctx, &mut app, vec![egui::Event::PointerMoved(b)]);
         run(&ctx, &mut app, vec![button(b, false)]);
-        eprintln!(
-            "sel {:?} text {:?} focused after: {:?}",
-            app.code_sel,
-            app.selected_code(),
-            ctx.memory(|m| m.focused())
-        );
         let copied = run(&ctx, &mut app, vec![egui::Event::Copy]);
         assert!(app.selected_code().is_some(), "drag selected nothing");
         assert_eq!(copied, vec![app.selected_code().unwrap()]);
