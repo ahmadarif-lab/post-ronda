@@ -2706,8 +2706,15 @@ impl App {
         let (a, b) = self.code_sel?;
         let (start, end) = if a <= b { (a, b) } else { (b, a) };
         let mut out = String::new();
-        for line in start.0..=end.0.min(self.code_lines.len().saturating_sub(1)) {
-            let text = &self.code_lines[line].text;
+        let last = end.0.min(self.code_lines.len().saturating_sub(1));
+        for (line, row) in self
+            .code_lines
+            .iter()
+            .enumerate()
+            .take(last + 1)
+            .skip(start.0)
+        {
+            let text = &row.text;
             let from = if line == start.0 { start.1 } else { 0 };
             let to = if line == end.0 { end.1 } else { usize::MAX };
             if line > start.0 {
