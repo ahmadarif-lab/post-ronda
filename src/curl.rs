@@ -302,10 +302,12 @@ pub fn parse(s: &str) -> Result<Request, String> {
                 r.url = value;
             }
             "-m" | "--max-time" => {
-                r.timeout = value
-                    .parse::<u32>()
-                    .map_err(|_| "Timeout must be an integer in seconds")?
-                    .clamp(1, 300)
+                r.timeout = Some(
+                    value
+                        .parse::<u32>()
+                        .map_err(|_| "Timeout must be an integer in seconds")?
+                        .clamp(1, crate::MAX_TIMEOUT),
+                )
             }
             "-L" | "--location" => r.follow_redirects = true,
             "-k" | "--insecure" => r.insecure = true,
@@ -591,7 +593,9 @@ pub fn export(r: &Request) -> String {
     if r.insecure {
         s.push_str(" -k");
     }
-    s.push_str(&format!(" --max-time {}", r.timeout));
+    if let Some(timeout) = r.timeout {
+        s.push_str(&format!(" --max-time {timeout}"));
+    }
     s
 }
 

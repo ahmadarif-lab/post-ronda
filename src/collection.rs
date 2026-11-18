@@ -2,6 +2,9 @@ use crate::{BodyMode, Header, RawKind, Request, environment::Variable};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+/// What every project stored as its timeout before the app-wide setting existed.
+const LEGACY_DEFAULT_TIMEOUT: u64 = 30;
+
 /// A folder created on its own (it may be empty). `before` says where it sits among the
 /// requests: it is shown just ahead of the request at that index, or last when `before` is
 /// the number of requests.
@@ -30,7 +33,8 @@ pub struct Collection {
     pub description: String,
     pub variables: Vec<Variable>,
     pub headers: Vec<Header>,
-    pub default_timeout: u32,
+    /// Timeout for new requests in this project; `None` follows the app-wide setting.
+    pub default_timeout: Option<u32>,
     pub follow_redirects: bool,
     pub insecure: bool,
 }
@@ -44,7 +48,7 @@ impl Default for Collection {
             description: String::new(),
             variables: vec![],
             headers: vec![],
-            default_timeout: 30,
+            default_timeout: None,
             follow_redirects: false,
             insecure: false,
         }
@@ -325,10 +329,11 @@ pub fn import_with_notes(s: &str) -> Result<(Collection, Vec<String>), String> {
             })
             .unwrap_or_default(),
         headers: serde_json::from_value(v["x-post-ronda"]["headers"].clone()).unwrap_or_default(),
+        // Projects saved before the app-wide setting stored the built-in 30 s; that was never a choice.
         default_timeout: v["x-post-ronda"]["timeout"]
             .as_u64()
-            .unwrap_or(30)
-            .clamp(1, 300) as u32,
+            .filter(|&t| t != LEGACY_DEFAULT_TIMEOUT)
+            .map(|t| t.clamp(1, crate::MAX_TIMEOUT as u64) as u32),
         follow_redirects: v["x-post-ronda"]["follow_redirects"]
             .as_bool()
             .unwrap_or(false),
@@ -501,7 +506,10 @@ fn walk(
             apply_auth(effective, &mut r, notes);
         }
         let opts = &item["x-post-ronda"];
-        r.timeout = opts["timeout"].as_u64().unwrap_or(30).clamp(1, 300) as u32;
+        r.timeout = opts["timeout"]
+            .as_u64()
+            .filter(|&t| t != LEGACY_DEFAULT_TIMEOUT)
+            .map(|t| t.clamp(1, crate::MAX_TIMEOUT as u64) as u32);
         r.follow_redirects = opts["follow_redirects"].as_bool().unwrap_or(false);
         r.insecure = opts["insecure"].as_bool().unwrap_or(false);
         r.query_notes = serde_json::from_value(opts["query_notes"].clone()).unwrap_or_default();
@@ -590,7 +598,7 @@ mod tests {
         c.name = "Billing".into();
         c.requests[0].name = "Invoices / List".into();
         c.requests[0].url = "https://a.test/invoices".into();
-        c.requests[0].timeout = 99;
+        c.requests[0].timeout = Some(99);
         c.pinned = vec!["Invoices".into()];
         let v = export_postman(&c);
         assert!(!v.to_string().contains("x-post-ronda"));
@@ -629,7 +637,7 @@ mod tests {
             value: "http://localhost".into(),
         });
         c.description = "API documentation".into();
-        c.default_timeout = 45;
+        c.default_timeout = Some(45);
         c.headers.push(Header::new("X-Collection", "yes"));
         c.requests[0]
             .query_notes
@@ -640,7 +648,28 @@ mod tests {
         assert_eq!(r.variables, c.variables);
         assert_eq!(r.headers, c.headers);
         assert_eq!(r.description, c.description);
-        assert_eq!(r.default_timeout, 45);
+        assert_eq!(r.default_timeout, Some(45));
+    }
+    #[test]
+    fn project_timeout_is_optional_and_legacy_default_follows_the_app() {
+        let mut c = Collection::default();
+        assert_eq!(c.default_timeout, None);
+        assert_eq!(
+            import(&export(&c).to_string()).unwrap().default_timeout,
+            None
+        );
+        c.default_timeout = Some(90);
+        assert_eq!(
+            import(&export(&c).to_string()).unwrap().default_timeout,
+            Some(90)
+        );
+        let old = r#"{"info":{"name":"Old"},"x-post-ronda":{"timeout":30},"item":[]}"#;
+        assert_eq!(import(old).unwrap().default_timeout, None);
+        let big = r#"{"info":{"name":"Big"},"x-post-ronda":{"timeout":99999},"item":[]}"#;
+        assert_eq!(
+            import(big).unwrap().default_timeout,
+            Some(crate::MAX_TIMEOUT)
+        );
     }
     #[test]
     fn folders() {

@@ -109,6 +109,8 @@ pub struct Network {
     /// Certificate (and key, when separate) presented to servers that ask for one (mTLS).
     pub client_cert: String,
     pub client_key: String,
+    /// Timeout for requests that do not set their own; `None` falls back to the built-in default.
+    pub default_timeout: Option<u32>,
 }
 pub fn execute(r: &Request, cancel: &Arc<AtomicBool>) -> Result<Response, String> {
     execute_with(r, cancel, &Network::default())
@@ -122,6 +124,11 @@ pub fn execute_with(
         url: crate::with_scheme(&r.url),
         ..r.with_auth()
     };
+    let timeout = r
+        .timeout
+        .or(net.default_timeout)
+        .unwrap_or(crate::DEFAULT_TIMEOUT)
+        .clamp(1, crate::MAX_TIMEOUT);
     let parsed = url::Url::parse(&r.url).map_err(|e| e.to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("Only HTTP(S) URLs are allowed".into());
@@ -171,7 +178,7 @@ pub fn execute_with(
         "--proto-redir",
         "=http,https",
         "--max-time",
-        &r.timeout.clamp(1, 300).to_string(),
+        &timeout.to_string(),
         "--connect-timeout",
         "10",
         "--max-filesize",
@@ -294,7 +301,7 @@ pub fn execute_with(
         });
         if cancel.load(Ordering::Relaxed)
             || oversized
-            || start.elapsed() > Duration::from_secs(r.timeout.clamp(1, 300) as u64 + 2)
+            || start.elapsed() > Duration::from_secs(timeout as u64 + 2)
         {
             let _ = child.kill();
             let _ = child.wait();
@@ -663,5 +670,37 @@ mod tests {
             ..Request::default()
         };
         assert!(execute(&r, &Arc::new(AtomicBool::new(false))).is_err());
+    }
+    #[test]
+    fn a_silent_server_hits_the_inherited_timeout_unless_the_request_sets_its_own() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Accepts and then says nothing, like a backend stuck on a slow upstream call.
+        let held = std::thread::spawn(move || {
+            let mut open = vec![];
+            for stream in listener.incoming().take(2) {
+                open.push(stream.unwrap());
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let net = Network {
+            default_timeout: Some(1),
+            ..Network::default()
+        };
+        let mut r = Request {
+            url: format!("http://{addr}/slow"),
+            ..Request::default()
+        };
+        let start = Instant::now();
+        let e = execute_with(&r, &cancel, &net).unwrap_err();
+        assert!(e.contains("timed out"), "{e}");
+        assert!(start.elapsed() < Duration::from_secs(4));
+        // A timeout on the request itself wins over the inherited one.
+        r.timeout = Some(2);
+        let start = Instant::now();
+        assert!(execute_with(&r, &cancel, &net).is_err());
+        assert!(start.elapsed() >= Duration::from_millis(1800));
+        drop(held);
     }
 }

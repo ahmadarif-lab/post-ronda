@@ -8,6 +8,11 @@ pub mod http;
 pub mod process;
 pub mod update;
 
+/// Seconds a request may take before curl gives up, unless the request says otherwise.
+pub const DEFAULT_TIMEOUT: u32 = 3600;
+/// Upper bound for any request timeout, in seconds.
+pub const MAX_TIMEOUT: u32 = 3600;
+
 /// One line that says what Post Ronda is: the welcome screen, About, README and package
 /// metadata all use these words (a test keeps the files that cannot import it in step).
 pub const TAGLINE: &str = "A fast, native, local-first API client. No account needed.";
@@ -173,7 +178,8 @@ pub struct Request {
     pub description: String,
     pub follow_redirects: bool,
     pub insecure: bool,
-    pub timeout: u32,
+    /// Seconds before curl gives up; `None` follows the project, then the app-wide setting.
+    pub timeout: Option<u32>,
     pub query_notes: std::collections::BTreeMap<String, String>,
 }
 impl Default for Request {
@@ -193,7 +199,7 @@ impl Default for Request {
             description: String::new(),
             follow_redirects: false,
             insecure: false,
-            timeout: 30,
+            timeout: None,
             query_notes: Default::default(),
         }
     }

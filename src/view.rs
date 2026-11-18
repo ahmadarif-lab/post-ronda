@@ -478,29 +478,18 @@ impl App {
     fn status_bar(&mut self, ui: &mut Ui, r: Rect) {
         let p = self.palette();
         line(ui, r.left_top(), r.right_top(), p);
-        let gear = icon_button(
+        // Straight to the project's settings; the dialog has a shortcut to the app's own.
+        if icon_button(
             ui,
             Rect::from_min_size(r.min + vec2(10., 0.), vec2(24., 24.)),
             Icon::Settings,
             "Settings (⌘/Ctrl+,)",
             p,
-        );
-        // ⌘/Ctrl+, opens the same menu.
-        if std::mem::take(&mut self.settings_chooser) {
-            egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&gear));
+        )
+        .clicked()
+        {
+            self.open_project_settings(self.collection_tab.min(4));
         }
-        egui::Popup::menu(&gear).show(|ui| {
-            ui.set_width(210.);
-            ui.spacing_mut().item_spacing.y = 1.;
-            if menu_item(ui, Icon::Settings, "App settings", false, p) {
-                self.settings = true;
-                ui.close();
-            }
-            if menu_item(ui, Icon::Folder, "Project settings", false, p) {
-                self.open_project_settings(self.collection_tab.min(5));
-                ui.close();
-            }
-        });
         if icon_button(
             ui,
             Rect::from_min_size(r.min + vec2(39., 0.), vec2(24., 24.)),
@@ -510,7 +499,7 @@ impl App {
         )
         .clicked()
         {
-            self.open_project_settings(5);
+            self.open_project_settings(4);
         }
         let theme_button = icon_button(
             ui,
@@ -764,7 +753,7 @@ impl App {
             .clicked()
         {
             if branch.is_some() {
-                self.open_project_settings(5);
+                self.open_project_settings(4);
             } else {
                 self.git("init", &ctx);
             }
@@ -1377,7 +1366,9 @@ impl App {
             }
             RowMenu::Clone => self.clone_request(i),
             RowMenu::Copy => {
-                ctx.copy_text(curl::export(&self.collection.requests[i]));
+                let mut request = self.collection.requests[i].clone();
+                request.timeout.get_or_insert(self.inherited_timeout());
+                ctx.copy_text(curl::export(&request));
                 self.notify(Ok("cURL copied to clipboard".into()));
             }
             RowMenu::Rename => {
@@ -2278,7 +2269,13 @@ impl App {
                     .count()
                     .to_string(),
             ),
-            ("Timeout", format!("{} s", request.timeout)),
+            (
+                "Timeout",
+                match request.timeout {
+                    Some(t) => format!("{t} s"),
+                    None => format!("{} s (inherited)", self.inherited_timeout()),
+                },
+            ),
             (
                 "Follow redirects",
                 if request.follow_redirects {
@@ -4360,8 +4357,56 @@ impl App {
             self.find_open = false;
         }
     }
+    /// A failed send: what went wrong, large enough to notice, with a way out for timeouts.
+    fn error_response(&self, ui: &mut Ui, r: Rect, message: &str) {
+        let p = self.palette();
+        let area = Rect::from_center_size(
+            pos2(r.center().x, r.top() + r.height() * 0.38),
+            vec2((r.width() - 48.).clamp(120., 560.), 0.),
+        );
+        region(
+            ui,
+            Rect::from_min_max(
+                pos2(area.left(), area.top() - 60.),
+                pos2(area.right(), r.bottom() - 16.),
+            ),
+            "response-error",
+            |ui| {
+                ui.label(
+                    RichText::new("Request failed")
+                        .size(18.)
+                        .strong()
+                        .color(p.red),
+                );
+                ui.add_space(10.);
+                ui.add(
+                    egui::Label::new(RichText::new(message).size(13.).color(p.text))
+                        .selectable(true)
+                        .wrap(),
+                );
+                if message.contains("timed out") {
+                    ui.add_space(12.);
+                    ui.label(
+                        RichText::new(
+                            "The server did not answer in time. Raise the timeout in Collection settings > This request, or for every project in App settings > Network.",
+                        )
+                        .size(12.)
+                        .color(p.muted),
+                    );
+                }
+            },
+        );
+    }
     fn empty_response(&mut self, ui: &mut Ui, r: Rect) {
         let p = self.palette();
+        if let Some((_, message)) = self
+            .response_error
+            .clone()
+            .filter(|(i, _)| *i == self.selected)
+        {
+            self.error_response(ui, r, &message);
+            return;
+        }
         let c = pos2(r.center().x, r.top() + r.height() * 0.31);
         let color = if p.dark {
             Color32::from_gray(74)
@@ -4430,7 +4475,6 @@ impl App {
         self.project_settings = true;
         self.collection_tab = tab;
         self.settings = false;
-        self.settings_chooser = false;
     }
     /// Left list of tabs shared by both settings dialogs.
     fn settings_nav(ui: &mut Ui, labels: &[(&str, Icon)], current: &mut usize, p: Palette) {
@@ -4460,35 +4504,123 @@ impl App {
             }
         }
     }
-    /// Settings of the app itself, the same for every project.
-    fn app_settings_dialog(&mut self, ctx: &egui::Context) {
+    /// Bottom-left of the settings modal: the two scopes as a segmented control, one active.
+    /// Returns the scope that was clicked (`true` = app, `false` = project) when it is not the
+    /// current one.
+    fn settings_scope_tabs(ui: &mut Ui, app_scope: bool, p: Palette) -> Option<bool> {
+        let rest = ui.available_height() - 34.;
+        if rest > 0. {
+            ui.add_space(rest);
+        }
+        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.), Sense::hover());
+        line(
+            ui,
+            row.left_top() - vec2(0., 5.),
+            row.right_top() - vec2(0., 5.),
+            p,
+        );
+        ui.painter()
+            .rect_stroke(row, 7, Stroke::new(1., p.border), StrokeKind::Inside);
+        let mut picked = None;
+        let half = row.width() / 2.;
+        for (i, (label, kind)) in [("Project", Icon::Folder), ("App", Icon::Settings)]
+            .into_iter()
+            .enumerate()
+        {
+            let is_app = i == 1;
+            let active = is_app == app_scope;
+            let rect = Rect::from_min_size(
+                pos2(row.left() + i as f32 * half, row.top()),
+                vec2(half, row.height()),
+            );
+            let res = ui
+                .interact(rect, ui.id().with(("settings-scope", i)), Sense::click())
+                .on_hover_cursor(eframe::egui::CursorIcon::PointingHand);
+            let color = if active { p.text } else { p.muted };
+            let inner = rect.shrink(3.);
+            if active {
+                ui.painter().rect_filled(inner, 5, p.selected);
+            } else if res.hovered() {
+                ui.painter().rect_filled(inner, 5, p.hover);
+            }
+            let galley =
+                ui.painter()
+                    .layout_no_wrap(label.to_string(), FontId::proportional(13.), color);
+            let start = rect.center().x - (16. + 6. + galley.size().x) / 2.;
+            style::icon(
+                ui,
+                Rect::from_min_size(pos2(start, rect.center().y - 8.), vec2(16., 16.)),
+                kind,
+                color,
+            );
+            text(ui, pos2(start + 22., rect.center().y), label, 13., color);
+            if res.clicked() && !active {
+                picked = Some(is_app);
+            }
+        }
+        picked
+    }
+    /// One dialog for both scopes, so switching between them keeps its size and does not fade:
+    /// the project's own settings, and the app's, the same for every project.
+    fn settings_dialog(&mut self, ctx: &egui::Context) {
         let p = self.palette();
-        let open = self.settings;
-        let close = modal(ctx, "app-settings", open, 820., "App settings", p, |ui| {
-            let labels = [
-                ("General", Icon::Settings),
-                ("Themes", Icon::Palette),
-                ("Display", Icon::Sidebar),
-                ("Network", Icon::Globe),
-                ("Keybindings", Icon::Code),
-                ("About", Icon::Info),
-            ];
-            let mut tab = self.prefs_tab.min(labels.len() - 1);
+        let open = self.settings || self.project_settings;
+        let mut switch_to = None;
+        let close = modal(ctx, "settings", open, 880., "Settings", p, |ui| {
+            let app_scope = self.settings;
+            let labels: &[(&str, Icon)] = if app_scope {
+                &[
+                    ("General", Icon::Settings),
+                    ("Themes", Icon::Palette),
+                    ("Display", Icon::Sidebar),
+                    ("Network", Icon::Globe),
+                    ("Keybindings", Icon::Code),
+                    ("About", Icon::Info),
+                ]
+            } else {
+                &[
+                    ("Settings", Icon::Settings),
+                    ("Documentation", Icon::Book),
+                    ("Variables", Icon::Code),
+                    ("Headers", Icon::Dots),
+                    ("Git", Icon::Git),
+                ]
+            };
+            let mut tab = if app_scope {
+                self.prefs_tab
+            } else {
+                self.collection_tab
+            }
+            .min(labels.len() - 1);
             ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(vec2(160., 440.), Layout::top_down(Align::Min), |ui| {
+                ui.allocate_ui_with_layout(vec2(160., 480.), Layout::top_down(Align::Min), |ui| {
                     ui.spacing_mut().item_spacing.y = 2.;
-                    Self::settings_nav(ui, &labels, &mut tab, p);
+                    Self::settings_nav(ui, labels, &mut tab, p);
+                    switch_to = Self::settings_scope_tabs(ui, app_scope, p);
                 });
                 ui.add_space(8.);
+                if app_scope {
+                    self.prefs_tab = tab;
+                } else {
+                    self.collection_tab = tab;
+                }
                 ui.allocate_ui_with_layout(
-                    vec2(ui.available_width(), 440.),
+                    vec2(ui.available_width(), 480.),
                     Layout::top_down(Align::Min),
                     |ui| {
                         egui::ScrollArea::vertical()
-                            .id_salt("app-settings-scroll")
-                            .max_height(440.)
+                            .id_salt(if app_scope {
+                                "app-settings-scroll"
+                            } else {
+                                "project-settings-scroll"
+                            })
+                            .max_height(480.)
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
+                                if !app_scope {
+                                    self.project_tab(ui, p);
+                                    return;
+                                }
                                 let mut changed = false;
                                 match tab {
                                     0 => self.general_tab(ui, p),
@@ -4505,16 +4637,24 @@ impl App {
                     },
                 );
             });
-            self.prefs_tab = tab;
         });
         if close {
             self.settings = false;
+            self.project_settings = false;
+        }
+        match switch_to {
+            Some(true) => {
+                self.project_settings = false;
+                self.settings = true;
+            }
+            Some(false) => self.open_project_settings(self.collection_tab.min(4)),
+            None => {}
         }
     }
     fn general_tab(&mut self, ui: &mut Ui, p: Palette) {
         ui.label(RichText::new("GENERAL").size(12.).color(p.muted));
         ui.add_space(20.);
-        ui.label("Saving");
+        section_title(ui, "Saving", p);
         ui.add_space(4.);
         ui.label(
             RichText::new(
@@ -4524,7 +4664,7 @@ impl App {
             .color(p.muted),
         );
         ui.add_space(24.);
-        ui.label("Where the app keeps its own data");
+        section_title(ui, "Where the app keeps its own data", p);
         ui.add_space(4.);
         ui.add(
             egui::Label::new(
@@ -4543,7 +4683,7 @@ impl App {
         let mut changed = false;
         ui.label(RichText::new("NETWORK").size(12.).color(p.muted));
         ui.add_space(20.);
-        ui.label("Proxy");
+        section_title(ui, "Proxy", p);
         ui.add_space(4.);
         changed |= ui
             .add(
@@ -4560,7 +4700,32 @@ impl App {
                 .color(p.muted),
         );
         ui.add_space(22.);
-        ui.label("Certificates");
+        section_title(ui, "Request timeout", p);
+        ui.add_space(6.);
+        ui.horizontal(|ui| {
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut self.prefs.request_timeout)
+                        .range(1..=post_ronda::MAX_TIMEOUT)
+                        .suffix(" seconds"),
+                )
+                .changed();
+            if self.prefs.request_timeout >= 60 {
+                ui.label(
+                    RichText::new(format!("= {}", timeout_text(self.prefs.request_timeout)))
+                        .size(12.)
+                        .color(p.muted),
+                );
+            }
+        });
+        ui.add_space(4.);
+        ui.label(
+            RichText::new("How long a request may take before it is cancelled. Every project follows this unless it sets its own in Project settings.")
+                .size(12.)
+                .color(p.muted),
+        );
+        ui.add_space(22.);
+        section_title(ui, "Certificates", p);
         ui.add_space(6.);
         changed |= file_field(
             ui,
@@ -4581,7 +4746,7 @@ impl App {
             p,
         );
         ui.add_space(14.);
-        ui.label("Cookies");
+        section_title(ui, "Cookies", p);
         ui.add_space(6.);
         changed |= ui
             .checkbox(
@@ -4882,70 +5047,59 @@ impl App {
                 .color(p.muted),
         );
     }
-    /// Settings of the open project: name, variables, headers, defaults and Git.
-    fn project_settings_dialog(&mut self, ctx: &egui::Context) {
-        let p = self.palette();
-        let open = self.project_settings;
-        let title = format!("Project settings: {}", self.collection.name);
-        let close = modal(ctx, "project-settings", open, 880., &title, p, |ui| {
-            let labels = [
-                ("Settings", Icon::Settings),
-                ("Documentation", Icon::Book),
-                ("Variables", Icon::Code),
-                ("Headers", Icon::Dots),
-                ("This request", Icon::Send),
-                ("Git", Icon::Git),
-            ];
-            let mut tab = self.collection_tab.min(labels.len() - 1);
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(vec2(160., 480.), Layout::top_down(Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.;
-                    Self::settings_nav(ui, &labels, &mut tab, p);
-                });
-                ui.add_space(8.);
-                self.collection_tab = tab;
-                ui.allocate_ui_with_layout(
-                    vec2(ui.available_width(), 480.),
-                    Layout::top_down(Align::Min),
-                    |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("project-settings-scroll")
-                            .max_height(480.)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| self.project_tab(ui, p));
-                    },
-                );
-            });
-        });
-        if close {
-            self.project_settings = false;
-        }
-    }
     fn project_tab(&mut self, ui: &mut Ui, p: Palette) {
         match self.collection_tab {
             0 => {
                 ui.label(RichText::new("PROJECT SETTINGS").size(12.).color(p.muted));
                 ui.add_space(20.);
-                ui.label("Name");
+                section_title(ui, "Name", p);
                 if ui
-                    .add(TextEdit::singleline(&mut self.collection.name).desired_width(420.))
+                    .add(
+                        TextEdit::singleline(&mut self.collection.name)
+                            .desired_width(f32::INFINITY)
+                            .margin(egui::Margin::symmetric(8, 7)),
+                    )
                     .changed()
                 {
                     self.changed();
                 }
                 ui.add_space(18.);
-                ui.label("Location");
-                ui.label(RichText::new(self.project.display().to_string()).color(p.muted));
+                section_title(ui, "Location", p);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(self.project.display().to_string())
+                            .size(12.)
+                            .color(p.muted),
+                    )
+                    .selectable(true)
+                    .wrap(),
+                );
                 ui.add_space(24.);
-                ui.label("Defaults for new requests");
+                section_title(ui, "Defaults for new requests", p);
                 ui.add_space(10.);
+                let app_timeout = self.prefs.request_timeout;
+                let mut follow_app = self.collection.default_timeout.is_none();
                 let mut changed = ui
-                    .add(
-                        egui::DragValue::new(&mut self.collection.default_timeout)
-                            .range(1..=300)
-                            .suffix(" seconds timeout"),
+                    .checkbox(
+                        &mut follow_app,
+                        format!(
+                            "Timeout: follow the app setting ({})",
+                            timeout_text(app_timeout)
+                        ),
                     )
                     .changed();
+                if changed {
+                    self.collection.default_timeout = (!follow_app).then_some(app_timeout);
+                }
+                if let Some(timeout) = &mut self.collection.default_timeout {
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(timeout)
+                                .range(1..=post_ronda::MAX_TIMEOUT)
+                                .suffix(" seconds timeout"),
+                        )
+                        .changed();
+                }
                 changed |= ui
                     .checkbox(&mut self.collection.follow_redirects, "Follow redirects")
                     .changed();
@@ -5016,49 +5170,13 @@ impl App {
                 ui.add_space(14.);
                 ui.label(RichText::new("Inherited by every request. A request header with the same name overrides the collection header.").color(p.muted));
             }
-            4 => {
-                ui.label("Request name / folder path");
-                if ui
-                    .add(
-                        TextEdit::singleline(&mut self.collection.requests[self.selected].name)
-                            .desired_width(480.),
-                    )
-                    .changed()
-                {
-                    self.changed();
-                }
-                ui.add_space(20.);
-                let req = &mut self.collection.requests[self.selected];
-                let mut changed = ui
-                    .add(
-                        egui::DragValue::new(&mut req.timeout)
-                            .range(1..=300)
-                            .suffix(" seconds timeout"),
-                    )
-                    .changed();
-                changed |= ui
-                    .checkbox(&mut req.follow_redirects, "Follow redirects")
-                    .changed();
-                let mut tls = !req.insecure;
-                changed |= ui
-                    .checkbox(&mut tls, "SSL/TLS Certificate Verification")
-                    .changed();
-                req.insecure = !tls;
-                if changed {
-                    self.changed();
-                }
-                ui.add_space(20.);
-                if ui.button("Delete request…").clicked() {
-                    self.confirm_delete = true;
-                }
-            }
 
             _ => {
                 ui.label(RichText::new("GIT").size(12.).color(p.muted));
                 ui.add_space(8.);
                 ui.label(RichText::new("This project is its own Git repository: its collection and environments are versioned in the project folder.").size(12.).color(p.muted));
                 ui.add_space(20.);
-                ui.label("Remote URL (origin)");
+                section_title(ui, "Remote URL (origin)", p);
                 ui.add_space(8.);
                 ui.add(
                     TextEdit::singleline(&mut self.remote)
@@ -5538,7 +5656,8 @@ impl App {
     fn codegen_dialog(&mut self, ctx: &egui::Context) {
         let p = self.palette();
         let open = self.codegen_open;
-        let base = self.collection.requests[self.selected].clone();
+        let mut base = self.collection.requests[self.selected].clone();
+        base.timeout.get_or_insert(self.inherited_timeout());
         let variables = self
             .environments
             .active
@@ -5899,8 +6018,7 @@ impl App {
         self.import_dialog(ctx);
         self.welcome_dialog(ctx);
         self.project_dialog(ctx);
-        self.app_settings_dialog(ctx);
-        self.project_settings_dialog(ctx);
+        self.settings_dialog(ctx);
         self.toast_view(ctx);
     }
 }
@@ -7467,6 +7585,28 @@ fn theme_card(ui: &mut Ui, preview: Palette, label: &str, selected: bool, p: Pal
 /// A labelled on/off switch; returns true when it was flipped.
 /// A field-like button showing `current` that opens a list of `options`; returns the chosen index.
 /// A path field with a Browse button, for the certificate settings; true when it changed.
+/// A heading for one group of settings, stronger than the field labels under it.
+fn section_title(ui: &mut Ui, title: &str, p: Palette) {
+    ui.label(RichText::new(title).size(14.).strong().color(p.text));
+}
+/// "3600" as "1 hour", "90" as "1 min 30 s": a long timeout is easier to judge in words.
+fn timeout_text(secs: u32) -> String {
+    if secs < 60 {
+        return format!("{secs} seconds");
+    }
+    let (h, m, s) = (secs / 3600, secs % 3600 / 60, secs % 60);
+    let mut parts = vec![];
+    if h > 0 {
+        parts.push(format!("{h} hour{}", if h == 1 { "" } else { "s" }));
+    }
+    if m > 0 {
+        parts.push(format!("{m} min"));
+    }
+    if s > 0 {
+        parts.push(format!("{s} s"));
+    }
+    parts.join(" ")
+}
 fn file_field(ui: &mut Ui, label: &str, value: &mut String, p: Palette) -> bool {
     let mut changed = false;
     ui.label(RichText::new(label).size(12.5));
@@ -8423,7 +8563,7 @@ mod tests {
             }
             app.settings = false;
             app.project_settings = true;
-            for tab in 0..6 {
+            for tab in 0..5 {
                 app.collection_tab = tab;
                 draw(&ctx, &mut app, vec![]);
             }
@@ -8901,11 +9041,19 @@ mod tests {
             modifiers: egui::Modifiers::COMMAND,
         };
         draw(&ctx, &mut app, vec![comma]);
-        // The shortcut opens the settings menu, which then asks which settings are meant.
-        assert!(!app.settings_chooser && !app.settings && !app.project_settings);
-        app.open_project_settings(5);
+        // The shortcut opens the project settings, which link to the app's own.
+        assert!(app.project_settings && !app.settings);
+        app.open_project_settings(4);
         assert!(app.project_settings);
-        assert_eq!(app.collection_tab, 5);
+        assert_eq!(app.collection_tab, 4);
+    }
+    #[test]
+    fn timeout_text_reads_in_words() {
+        assert_eq!(timeout_text(30), "30 seconds");
+        assert_eq!(timeout_text(60), "1 min");
+        assert_eq!(timeout_text(90), "1 min 30 s");
+        assert_eq!(timeout_text(3600), "1 hour");
+        assert_eq!(timeout_text(7260), "2 hours 1 min");
     }
     #[test]
     fn every_theme_layout_and_wrapping_mode_renders() {

@@ -394,7 +394,7 @@ fn py_requests(r: &Request, original: &Request) -> String {
     }
     s.push_str(&format!(
         "    timeout={},\n)\nprint(response.text)",
-        r.timeout
+        r.timeout.unwrap_or(crate::DEFAULT_TIMEOUT)
     ));
     s
 }
@@ -408,7 +408,7 @@ fn py_http_client(r: &Request) -> String {
     let mut s = format!(
         "import http.client\n\nconn = http.client.{class}({}, {port}, timeout={})\n",
         dq(&host),
-        r.timeout
+        r.timeout.unwrap_or(crate::DEFAULT_TIMEOUT)
     );
     s.push_str("headers = {\n");
     for h in headers(r) {
@@ -433,7 +433,7 @@ fn php(r: &Request, original: &Request) -> String {
         sq_escaped(&r.url),
         sq_escaped(&r.method),
         r.follow_redirects,
-        r.timeout
+        r.timeout.unwrap_or(crate::DEFAULT_TIMEOUT)
     );
     if r.insecure {
         s.push_str("    CURLOPT_SSL_VERIFYPEER => false,\n    CURLOPT_SSL_VERIFYHOST => 0,\n");
@@ -530,7 +530,7 @@ fn rust(r: &Request) -> String {
         } else {
             "reqwest::redirect::Policy::none()"
         },
-        r.timeout,
+        r.timeout.unwrap_or(crate::DEFAULT_TIMEOUT),
         dq(&r.url)
     ));
     for h in headers(r) {
@@ -553,7 +553,7 @@ fn ruby(r: &Request) -> String {
     let mut s = format!(
         "require \"net/http\"\nrequire \"uri\"\n\nuri = URI({})\nhttp = Net::HTTP.new(uri.host, uri.port)\nhttp.read_timeout = {}\n",
         dq(&r.url),
-        r.timeout
+        r.timeout.unwrap_or(crate::DEFAULT_TIMEOUT)
     );
     if https {
         s.push_str("http.use_ssl = true\n");
@@ -580,7 +580,7 @@ fn swift(r: &Request) -> String {
         "import Foundation\n\nvar request = URLRequest(url: URL(string: {})!)\nrequest.httpMethod = {}\nrequest.timeoutInterval = {}\n",
         dq(&r.url),
         dq(&r.method),
-        r.timeout
+        r.timeout.unwrap_or(crate::DEFAULT_TIMEOUT)
     );
     for h in headers(r) {
         s.push_str(&format!(
@@ -606,7 +606,7 @@ fn java(r: &Request) -> String {
         "HttpClient client = HttpClient.newBuilder()\n    .followRedirects(HttpClient.Redirect.{})\n    .build();\nHttpRequest request = HttpRequest.newBuilder()\n    .uri(URI.create({}))\n    .timeout(java.time.Duration.ofSeconds({}))\n",
         if r.follow_redirects { "NORMAL" } else { "NEVER" },
         dq(&r.url),
-        r.timeout
+        r.timeout.unwrap_or(crate::DEFAULT_TIMEOUT)
     ));
     for h in headers(r) {
         s.push_str(&format!(

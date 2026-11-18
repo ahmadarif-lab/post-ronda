@@ -119,6 +119,8 @@ struct App {
     tab: usize,
     response_tab: usize,
     response: Option<Response>,
+    /// Why the last send of request `.0` failed; shown in the response pane instead of the empty state.
+    response_error: Option<(usize, String)>,
     response_text: String,
     pretty: bool,
     /// The response is an HTML page, which can be read rendered or as its source.
@@ -157,7 +159,6 @@ struct App {
     /// Show the password / token fields of the Auth tab in clear text.
     show_secret: bool,
     /// Settings button: first asks whether app or project settings are meant.
-    settings_chooser: bool,
     project_settings: bool,
     page: usize,
     sidebar_width: f32,
@@ -373,6 +374,7 @@ impl App {
             tab: 0,
             response_tab: 0,
             response: None,
+            response_error: None,
             response_text: String::new(),
             pretty: true,
             response_is_html: false,
@@ -404,7 +406,6 @@ impl App {
             #[cfg(debug_assertions)]
             update_checked_now: false,
             show_secret: false,
-            settings_chooser: false,
             project_settings: false,
             page: 0,
             sidebar_width: 250.,
@@ -625,7 +626,6 @@ impl App {
                 app.settings = true;
                 app.prefs_tab = 1;
             }
-            "settings-chooser" => app.settings_chooser = true,
             "settings-about" => {
                 app.settings = true;
                 app.prefs_tab = 5;
@@ -659,8 +659,9 @@ impl App {
                     checksums: Default::default(),
                 });
             }
-            "project-git" => app.open_project_settings(5),
+            "project-git" => app.open_project_settings(4),
             "project-vars" => app.open_project_settings(2),
+            "project-settings" => app.open_project_settings(0),
             "environments" => {
                 app.page = 2;
                 app.editing_environment = app.environments.active;
@@ -876,6 +877,7 @@ impl App {
         self.page = 0;
         self.settings = false;
         self.response = None;
+        self.response_error = None;
         self.response_cache.clear();
         self.drafts = if fresh {
             [0].into()
@@ -1280,6 +1282,12 @@ impl App {
             );
         }
     }
+    /// Timeout a request gets when it sets none: the project's, else the app-wide one.
+    fn inherited_timeout(&self) -> u32 {
+        self.collection
+            .default_timeout
+            .unwrap_or(self.prefs.request_timeout)
+    }
     fn send(&mut self, ctx: &egui::Context) {
         if self.running {
             return;
@@ -1321,6 +1329,7 @@ impl App {
         self.sent_at = Some(Instant::now());
         self.notice = "Sending request…".into();
         self.error = false;
+        self.response_error = None;
         let net = http::Network {
             cookie_jar: self
                 .prefs
@@ -1335,6 +1344,7 @@ impl App {
             ca_cert: self.prefs.ca_cert.clone(),
             client_cert: self.prefs.client_cert.clone(),
             client_key: self.prefs.client_key.clone(),
+            default_timeout: Some(self.inherited_timeout()),
         };
         std::thread::spawn(move || {
             let result = http::execute_with(&executable, &cancel, &net);
@@ -1383,6 +1393,7 @@ impl App {
         }
         self.collection.requests[self.selected] = parsed;
         self.response = None;
+        self.response_error = None;
         self.response_cache.remove(&self.selected);
         // Open where the interesting part is: the body if there is one, otherwise the params.
         self.tab =
@@ -1414,7 +1425,6 @@ impl App {
                 Some(folder) => format!("{folder} / Untitled {number}"),
                 None => format!("Untitled {number}"),
             },
-            timeout: self.collection.default_timeout,
             follow_redirects: self.collection.follow_redirects,
             insecure: self.collection.insecure,
             ..Default::default()
@@ -1558,6 +1568,7 @@ impl App {
             .pinned
             .retain(|p| !Self::in_folder(p, folder));
         self.response = None;
+        self.response_error = None;
         self.dirty = Some(Instant::now());
     }
     /// Looks for a newer release at the configured address, in the background.
@@ -2199,12 +2210,14 @@ impl eframe::App for App {
                     match result {
                         Ok(r) => {
                             self.response = Some(r);
+                            self.response_error = None;
                             self.response_body();
                             self.scroll_response_top = true;
                             self.notify(Ok("Response received".into()));
                         }
                         Err(e) => {
                             self.response = None;
+                            self.response_error = Some((self.selected, e.clone()));
                             self.notify(Err(e));
                         }
                     }
@@ -2404,7 +2417,7 @@ impl eframe::App for App {
             self.page = 2;
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
-            self.settings_chooser = true;
+            self.open_project_settings(self.collection_tab.min(4));
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::K))
             || ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::P))

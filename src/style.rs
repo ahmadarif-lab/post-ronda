@@ -29,6 +29,8 @@ pub struct Preferences {
     pub update_url: String,
     /// Keep cookies the servers set and send them back (one jar per project).
     pub keep_cookies: bool,
+    /// Seconds a request may take, for every project that does not set its own.
+    pub request_timeout: u32,
     pub proxy: String,
     pub ca_cert: String,
     pub client_cert: String,
@@ -49,6 +51,7 @@ impl Default for Preferences {
             auto_update: true,
             update_url: post_ronda::update::DEFAULT_FEED.into(),
             keep_cookies: true,
+            request_timeout: post_ronda::DEFAULT_TIMEOUT,
             proxy: String::new(),
             ca_cert: String::new(),
             client_cert: String::new(),
