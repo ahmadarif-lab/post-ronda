@@ -19,6 +19,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: The tag must match the version in Cargo.toml
         run: test "v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" = "$GITHUB_REF_NAME"
+      - name: The release needs written notes
+        run: test -s "docs/releases/$GITHUB_REF_NAME.md" || { echo "Write docs/releases/$GITHUB_REF_NAME.md before tagging" >&2; exit 1; }
       - name: Linux desktop dependencies
         if: runner.os == 'Linux'
         run: |
@@ -56,6 +58,7 @@ jobs:
     needs: package
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: packages
@@ -67,4 +70,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: packages/*
+          body_path: docs/releases/${{ github.ref_name }}.md
           generate_release_notes: true
