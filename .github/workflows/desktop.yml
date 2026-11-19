@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-24.04, windows-2022]
+        os: [macos-15, macos-15-intel, ubuntu-24.04, windows-2022]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -32,7 +32,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           ./scripts/bundle-macos.sh
-          ditto -c -k --sequesterRsrc --keepParent 'dist/Post Ronda.app' dist/Post-Ronda-macos-arm64.zip
+          ARCH=$(uname -m); [ "$ARCH" = arm64 ] || ARCH=x86_64
+          ditto -c -k --sequesterRsrc --keepParent 'dist/Post Ronda.app' "dist/Post-Ronda-macos-$ARCH.zip"
           ./scripts/installer-macos.sh
       - name: Package Linux
         if: runner.os == 'Linux'

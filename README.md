@@ -70,6 +70,7 @@ Download the package for your system from the [Releases](https://github.com/ahma
 | System | Installer | Archive |
 | --- | --- | --- |
 | macOS (Apple Silicon) | `Post-Ronda-macos-arm64.pkg`: double-click, follow the steps, the app lands in Applications | `Post-Ronda-macos-arm64.zip` |
+| macOS (Intel) | `Post-Ronda-macos-x86_64.pkg`: same installer, built natively for Intel Macs | `Post-Ronda-macos-x86_64.zip` |
 | Windows (x64) | `Post-Ronda-Setup-x64.exe`: a normal setup wizard (Start menu entry, optional desktop shortcut, uninstaller; no administrator rights needed) | `Post-Ronda-windows-x64.zip`, run `PostRonda.exe` |
 | Linux (x86_64, arm64) | | `post-ronda-linux-<arch>.tar.gz`, run `bin/post-ronda` |
 
