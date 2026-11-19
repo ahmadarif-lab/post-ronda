@@ -47,7 +47,8 @@ See the [benchmark results and methodology](docs/benchmark.md) for resource meas
 
 **Projects and collaboration**
 - Several projects, each in its own folder with `collection.json` and `environments.json`. Switch between them from the title bar.
-- Git per project: initialize, set origin, pull and commit & push, using your own Git credentials.
+- Git per project: initialize, set origin, pull and commit & push. Log in with the Git on your computer, or give the project its own login in the app (username + access token, or an SSH key file), plus an optional commit author. Credentials are kept outside the project folder.
+- Optional automatic sync per project: commit and push after every save, and pull when the project opens and every few minutes, so a collection shared through Git stays current. Teammates' changes are merged in; a real conflict is reported and nothing is lost.
 - Folders, drag & drop ordering, pinned items, preview tabs and a request history that survives restarts.
 - Cookies are kept between requests (one jar per project).
 

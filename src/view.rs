@@ -622,21 +622,40 @@ impl App {
         {
             self.history_view = !self.history_view;
         }
-        let notice = if self.git_running {
-            "Git operation in progress…"
+        let working = self.git_running;
+        let notice = if working {
+            self.git_label
         } else {
-            &self.notice
+            self.notice.as_str()
         };
-        let notice_rect =
-            Rect::from_min_max(r.min + vec2(138., 0.), pos2(r.right() - 190., r.bottom()));
-        let color = if self.error { p.red } else { p.muted };
+        // A small spinner stands in front of the text while Git works.
+        let text_x = r.min.x + if working { 158. } else { 138. };
+        if working {
+            ui.put(
+                Rect::from_center_size(pos2(r.min.x + 146., r.center().y), vec2(12., 12.)),
+                egui::Spinner::new().size(11.).color(p.muted),
+            );
+        }
+        let notice_rect = Rect::from_min_max(
+            pos2(text_x, r.top()),
+            pos2((r.right() - 190.).max(text_x), r.bottom()),
+        );
+        let color = if self.error && !working {
+            p.red
+        } else {
+            p.muted
+        };
+        let one_line = notice.replace('\n', " ");
         ui.painter().with_clip_rect(notice_rect).text(
             pos2(notice_rect.left(), r.center().y),
             Align2::LEFT_CENTER,
-            notice,
+            &one_line,
             FontId::proportional(11.),
             color,
         );
+        // Long messages (a Git error, say) are cut by the bar; the full text is one hover away.
+        ui.interact(notice_rect, ui.id().with("status-notice"), Sense::hover())
+            .on_hover_text(notice);
         if icon_button(
             ui,
             Rect::from_min_size(pos2(r.right() - 171., r.top()), vec2(24., 24.)),
@@ -736,21 +755,20 @@ impl App {
         });
         // Before a repository exists the button creates one; afterwards it shows the branch.
         let branch = crate::git_branch(&self.project);
-        if !self.git_running
-            && outlined(
-                ui,
-                Rect::from_min_size(pos2(r.right() - 402., r.top() + 8.), vec2(112., 27.)),
-                &match &branch {
-                    Some(b) if b.chars().count() > 12 => {
-                        format!("{}…", b.chars().take(11).collect::<String>())
-                    }
-                    Some(b) => b.clone(),
-                    None => "Initialize Git".to_owned(),
-                },
-                Some(Icon::Git),
-                p,
-            )
-            .clicked()
+        if outlined(
+            ui,
+            Rect::from_min_size(pos2(r.right() - 402., r.top() + 8.), vec2(112., 27.)),
+            &match &branch {
+                Some(b) if b.chars().count() > 12 => {
+                    format!("{}…", b.chars().take(11).collect::<String>())
+                }
+                Some(b) => b.clone(),
+                None => "Initialize Git".to_owned(),
+            },
+            Some(Icon::Git),
+            p,
+        )
+        .clicked()
         {
             if branch.is_some() {
                 self.open_project_settings(4);
@@ -5179,6 +5197,7 @@ impl App {
             }
 
             _ => {
+                let before = self.git_cfg.clone();
                 ui.label(RichText::new("GIT").size(12.).color(p.muted));
                 ui.add_space(8.);
                 ui.label(RichText::new("This project is its own Git repository: its collection and environments are versioned in the project folder.").size(12.).color(p.muted));
@@ -5188,6 +5207,7 @@ impl App {
                 ui.add(
                     TextEdit::singleline(&mut self.remote)
                         .desired_width(f32::INFINITY)
+                        .margin(egui::Margin::symmetric(8, 7))
                         .hint_text("git@github.com:you/collection.git"),
                 );
                 ui.add_space(12.);
@@ -5199,27 +5219,175 @@ impl App {
                             ui.label(RichText::new(format!("On branch {b}")).color(p.muted));
                         }
                         None => {
-                            if ui.button("Initialize Git").clicked() {
+                            if ui
+                                .add(egui::Button::new("Initialize Git").min_size(vec2(0., 30.)))
+                                .clicked()
+                            {
                                 self.git("init", &ctx);
                             }
                         }
                     }
-                    if ui.button("Set origin").clicked() {
+                    if ui
+                        .add(egui::Button::new("Set origin").min_size(vec2(0., 30.)))
+                        .clicked()
+                    {
                         self.git("remote", &ctx);
                     }
-                    if ui.button("Pull").clicked() {
+                    if ui
+                        .add(egui::Button::new("Pull").min_size(vec2(0., 30.)))
+                        .clicked()
+                    {
                         self.git("pull", &ctx);
                     }
-                    if ui.button("Commit & Push").clicked() {
+                    if ui
+                        .add(egui::Button::new("Commit & Push").min_size(vec2(0., 30.)))
+                        .clicked()
+                    {
                         self.git("push", &ctx);
                     }
                 });
-                ui.add_space(20.);
+                ui.add_space(14.);
+                ui.separator();
+                ui.add_space(12.);
+                section_title(ui, "Login", p);
+                ui.add_space(6.);
+                ui.horizontal_wrapped(|ui| {
+                    use post_ronda::git::Auth;
+                    let auth = &mut self.git_cfg.auth;
+                    for (value, label) in [
+                        (Auth::System, "Git on this computer"),
+                        (Auth::Https, "Username + access token"),
+                        (Auth::Ssh, "SSH key file"),
+                    ] {
+                        if choice_chip(ui, label, *auth == value, p).clicked() {
+                            *auth = value;
+                        }
+                    }
+                });
+                ui.add_space(8.);
+                let note = match self.git_cfg.auth {
+                    post_ronda::git::Auth::System => {
+                        "Uses the credentials Git itself has (credential manager, ssh-agent, ~/.ssh). Pick another option when this project's repository needs a different account than your terminal."
+                    }
+                    post_ronda::git::Auth::Https => {
+                        "For https:// remotes. Used instead of anything stored by Git; the token never goes into the project folder or the command line."
+                    }
+                    post_ronda::git::Auth::Ssh => {
+                        "For git@… / ssh:// remotes. Only this key is offered to the server."
+                    }
+                };
+                egui::Frame::new()
+                    .fill(p.field)
+                    .corner_radius(6.)
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(note).size(12.).color(p.muted));
+                    });
+                ui.add_space(10.);
+                match self.git_cfg.auth {
+                    post_ronda::git::Auth::System => {}
+                    post_ronda::git::Auth::Https => {
+                        ui.label(RichText::new("Username").size(12.).color(p.muted));
+                        ui.add(
+                            TextEdit::singleline(&mut self.git_cfg.username)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("Optional for GitHub and GitLab tokens")
+                                .margin(egui::Margin::symmetric(8, 7)),
+                        );
+                        ui.add_space(8.);
+                        ui.label(
+                            RichText::new("Access token / password")
+                                .size(12.)
+                                .color(p.muted),
+                        );
+                        ui.add(
+                            TextEdit::singleline(&mut self.git_cfg.token)
+                                .password(true)
+                                .desired_width(f32::INFINITY)
+                                .margin(egui::Margin::symmetric(8, 7)),
+                        );
+                    }
+                    post_ronda::git::Auth::Ssh => {
+                        file_field(ui, "Private key", &mut self.git_cfg.ssh_key, p);
+                    }
+                }
+                if self.git_cfg.auth != post_ronda::git::Auth::System {
+                    ui.add_space(6.);
+                    ui.label(
+                        RichText::new("Saved on this computer only, in Post Ronda's own folder and readable by you alone; the OS keychain is not used.")
+                            .size(12.)
+                            .color(p.muted),
+                    );
+                }
+                ui.add_space(10.);
+                if ui
+                    .add(egui::Button::new("Test connection").min_size(vec2(0., 30.)))
+                    .clicked()
+                {
+                    self.git("test", &ctx);
+                }
+                ui.add_space(14.);
+                ui.separator();
+                ui.add_space(12.);
+                section_title(ui, "Commit author", p);
+                ui.add_space(6.);
+                ui.horizontal(|ui| {
+                    ui.add(
+                        TextEdit::singleline(&mut self.git_cfg.author_name)
+                            .desired_width(180.)
+                            .hint_text("Name")
+                            .margin(egui::Margin::symmetric(8, 7)),
+                    );
+                    ui.add(
+                        TextEdit::singleline(&mut self.git_cfg.author_email)
+                            .desired_width(220.)
+                            .hint_text("Email")
+                            .margin(egui::Margin::symmetric(8, 7)),
+                    );
+                });
+                ui.add_space(4.);
                 ui.label(
-                    RichText::new("Uses your local Git credentials.")
+                    RichText::new("Leave empty to use the name and email Git is configured with.")
                         .size(12.)
                         .color(p.muted),
                 );
+                ui.add_space(14.);
+                ui.separator();
+                ui.add_space(12.);
+                section_title(ui, "Automatic sync", p);
+                ui.add_space(6.);
+                ui.checkbox(
+                    &mut self.git_cfg.auto_push,
+                    "Commit and push after every save",
+                );
+                ui.add_space(4.);
+                ui.horizontal(|ui| {
+                    ui.checkbox(
+                        &mut self.git_cfg.auto_pull,
+                        "Pull when the project opens and every",
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.git_cfg.pull_minutes)
+                            .range(1..=60)
+                            .suffix(" min"),
+                    );
+                });
+                ui.add_space(4.);
+                ui.label(
+                    RichText::new("Push waits a few seconds after the last save. If a teammate pushed first, their changes are merged in; when the same part was edited by both, nothing is lost and you are told. Pull only runs while you have no unsaved requests.")
+                        .size(12.)
+                        .color(p.muted),
+                );
+                if self.git_cfg != before {
+                    if let Err(e) = self.git_cfg.save(&crate::git_settings_file(&self.project)) {
+                        self.notify(Err(e));
+                    }
+                    // Turning auto pull on pulls at once instead of after the first interval.
+                    if self.git_cfg.auto_pull && !before.auto_pull {
+                        self.git_last_pull = None;
+                    }
+                }
             }
         }
     }
@@ -7593,6 +7761,36 @@ fn theme_card(ui: &mut Ui, preview: Palette, label: &str, selected: bool, p: Pal
 /// A field-like button showing `current` that opens a list of `options`; returns the chosen index.
 /// A path field with a Browse button, for the certificate settings; true when it changed.
 /// A heading for one group of settings, stronger than the field labels under it.
+/// One option of a small row of exclusive choices. Its size does not depend on hover or
+/// selection, so the row never shifts under the pointer.
+fn choice_chip(ui: &mut Ui, label: &str, selected: bool, p: Palette) -> egui::Response {
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.to_owned(), egui::FontId::proportional(14.), p.text);
+    let (rect, res) = ui.allocate_exact_size(galley.size() + vec2(24., 14.), Sense::click());
+    let (fill, stroke) = if selected {
+        (p.selected, p.gold)
+    } else if res.hovered() {
+        (p.hover, p.border)
+    } else {
+        (Color32::TRANSPARENT, Color32::TRANSPARENT)
+    };
+    ui.painter().rect(
+        rect,
+        5.,
+        fill,
+        Stroke::new(1., stroke),
+        egui::StrokeKind::Inside,
+    );
+    let color = if selected || res.hovered() {
+        p.text
+    } else {
+        p.muted
+    };
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2., galley, color);
+    res.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
 fn section_title(ui: &mut Ui, title: &str, p: Palette) {
     ui.label(RichText::new(title).size(14.).strong().color(p.text));
 }

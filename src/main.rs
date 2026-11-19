@@ -24,7 +24,11 @@ use std::{
 
 enum Message {
     Response(Box<Request>, Result<Response, String>),
-    Git(Result<String, String>),
+    /// A Git action finished; `auto` says it was the automatic push or pull.
+    Git {
+        result: Result<post_ronda::git::Outcome, String>,
+        auto: bool,
+    },
     /// Result of an update check; the flag says the user asked for it (not the start-up check).
     Update(bool, Result<post_ronda::update::Release, String>),
     UpdateStatus(String),
@@ -145,6 +149,14 @@ struct App {
     rx: mpsc::Receiver<Message>,
     running: bool,
     git_running: bool,
+    /// This project's Git login and automatic push / pull, kept outside the project folder.
+    git_cfg: post_ronda::git::Settings,
+    /// A save happened at this moment and has not been pushed yet.
+    git_push_due: Option<Instant>,
+    /// When the automatic pull last ran; `None` means it is due as soon as it may.
+    git_last_pull: Option<Instant>,
+    /// What the status bar says, with a spinner, while Git works.
+    git_label: &'static str,
     cancel: Arc<AtomicBool>,
     dirty: Option<Instant>,
     history: Vec<Request>,
@@ -275,6 +287,10 @@ fn state_dir() -> PathBuf {
     }
 }
 fn main() -> eframe::Result {
+    // Git starts this program to ask for the project's token (see `git.rs`): answer and leave.
+    if post_ronda::git::answer_askpass() {
+        return Ok(());
+    }
     post_ronda::crashlog::install(state_dir());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -394,6 +410,10 @@ impl App {
             rx,
             running: false,
             git_running: false,
+            git_cfg: Default::default(),
+            git_push_due: None,
+            git_last_pull: None,
+            git_label: "",
             cancel: Arc::new(AtomicBool::new(false)),
             dirty: None,
             history: vec![],
@@ -494,7 +514,8 @@ impl App {
             ..app.collection.clone()
         };
         app.env_saved = app.environments.clone();
-        app.remote = origin_of(&app.project);
+        app.remote = post_ronda::git::origin_of(&app.project);
+        app.git_cfg = post_ronda::git::Settings::load(&git_settings_file(&app.project));
         post_ronda::update::clean_up_after_update();
         app.history = load_history(&app.project);
         #[cfg(debug_assertions)]
@@ -803,6 +824,9 @@ impl App {
         .map_err(|e| e.to_string())?;
         // A renamed collection is renamed in the project switcher too.
         self.register_current();
+        if self.git_cfg.auto_push {
+            self.git_push_due = Some(Instant::now());
+        }
         Ok(())
     }
     fn projects_file() -> PathBuf {
@@ -871,7 +895,10 @@ impl App {
         self.tabs = vec![0];
         self.preview = None;
         // Git belongs to the project: show its own origin, not the one typed for another.
-        self.remote = origin_of(&self.project);
+        self.remote = post_ronda::git::origin_of(&self.project);
+        self.git_cfg = post_ronda::git::Settings::load(&git_settings_file(&self.project));
+        self.git_push_due = None;
+        self.git_last_pull = None;
         self.history = load_history(&self.project);
         self.tab = 0;
         self.page = 0;
@@ -1352,8 +1379,120 @@ impl App {
             ctx.request_repaint();
         });
     }
+    /// Takes the collection and environments from the files again, after Git changed them.
+    /// Nothing is disabled while Git works, so edits made in the meantime are carried over:
+    /// requests with unsaved changes, new drafts and pending settings stay as they are.
+    fn reload_from_disk(&mut self) {
+        let imported = match std::fs::read_to_string(self.project.join("collection.json"))
+            .map_err(|e| e.to_string())
+            .and_then(|s| collection::import(&s))
+        {
+            Ok(c) => c,
+            Err(e) => {
+                self.notify(Err(format!(
+                    "Git completed, but collection needs attention: {e}"
+                )));
+                return;
+            }
+        };
+        let name_of = |c: &Collection, i: usize| c.requests.get(i).map(|r| r.name.clone());
+        let tab_names: Vec<Option<String>> = self
+            .tabs
+            .iter()
+            .map(|&i| name_of(&self.collection, i))
+            .collect();
+        let selected_name = name_of(&self.collection, self.selected);
+        // (old index, request, is a draft) of everything the user has not saved yet.
+        let local: Vec<(usize, Request, bool)> = (0..self.collection.requests.len())
+            .filter(|&i| {
+                if self.drafts.contains(&i) {
+                    self.draft_has_content(i)
+                } else {
+                    self.request_unsaved(i)
+                }
+            })
+            .map(|i| {
+                (
+                    i,
+                    self.collection.requests[i].clone(),
+                    self.drafts.contains(&i),
+                )
+            })
+            .collect();
+        let settings_pending = self.pending_structural();
+        let local_collection = self.collection.clone();
+        let local_environments = self.environments.clone();
+
+        let mut merged = imported.clone();
+        let mut drafts = std::collections::BTreeSet::new();
+        for (_, request, draft) in &local {
+            let existing = merged.requests.iter().position(|r| r.name == request.name);
+            match (draft, existing) {
+                (false, Some(i)) => merged.requests[i] = request.clone(),
+                _ => {
+                    merged.requests.push(request.clone());
+                    if *draft {
+                        drafts.insert(merged.requests.len() - 1);
+                    }
+                }
+            }
+        }
+        let find = |c: &Collection, name: &Option<String>| {
+            name.as_ref()
+                .and_then(|n| c.requests.iter().position(|r| &r.name == n))
+        };
+        self.tabs = tab_names.iter().filter_map(|n| find(&merged, n)).collect();
+        self.selected = find(&merged, &selected_name)
+            .unwrap_or_else(|| self.selected.min(merged.requests.len().saturating_sub(1)));
+        if self.tabs.is_empty() && !merged.requests.is_empty() {
+            self.tabs.push(self.selected);
+        }
+        self.preview = None;
+        self.response_cache.clear();
+        // What the files hold is the reference for "unsaved"; the next autosave must not write
+        // the old copy back over what was just pulled.
+        self.baseline = imported.requests.iter().cloned().enumerate().collect();
+        self.meta_saved = Collection {
+            requests: vec![],
+            ..imported.clone()
+        };
+        let pulled_environments =
+            post_ronda::environment::Environments::load(&self.project.join("environments.json"))
+                .unwrap_or_else(|_| local_environments.clone());
+        self.env_saved = pulled_environments.clone();
+        self.collection = if settings_pending {
+            Collection {
+                requests: merged.requests,
+                ..local_collection
+            }
+        } else {
+            merged
+        };
+        self.environments = if settings_pending {
+            local_environments
+        } else {
+            pulled_environments
+        };
+        self.drafts = drafts;
+        self.dirty = None;
+    }
     fn git(&mut self, action: &str, ctx: &egui::Context) {
+        self.run_git(action, false, ctx);
+    }
+    /// `auto` is the push or pull the app starts by itself: it needs no click, shows no
+    /// progress and only speaks up when something goes wrong.
+    fn run_git(&mut self, action: &str, auto: bool, ctx: &egui::Context) {
         if self.git_running {
+            return;
+        }
+        if action.ends_with("pull")
+            && !auto
+            && (self.unsaved_count() > 0 || !self.drafts.is_empty())
+        {
+            self.notify(Err(
+                "Save or close your unsaved requests before pulling: the pull reloads the collection."
+                    .into(),
+            ));
             return;
         }
         if (self.dirty.is_some() || !self.project.join("collection.json").exists())
@@ -1365,15 +1504,60 @@ impl App {
         self.git_running = true;
         let project = self.project.clone();
         let remote = self.remote.clone();
-        let action = action.to_owned();
+        let settings = self.git_cfg.clone();
+        let action = if auto {
+            format!("auto-{action}")
+        } else {
+            action.to_owned()
+        };
         let tx = self.tx.clone();
         let ctx = ctx.clone();
-        self.notice = format!("Git {action}…");
+        self.git_label = match action.trim_start_matches("auto-") {
+            "pull" => "Pulling…",
+            "push" => "Pushing…",
+            "test" => "Testing connection…",
+            _ => "Git…",
+        };
         std::thread::spawn(move || {
-            let result = git_action(&project, &action, &remote);
-            let _ = tx.send(Message::Git(result));
+            let result = post_ronda::git::run_action(&project, &action, &remote, &settings);
+            let _ = tx.send(Message::Git { result, auto });
             ctx.request_repaint();
         });
+    }
+    /// Drives the automatic push (a few seconds after a save) and pull (every few minutes, and
+    /// once when the project opens). Both wait for whatever else is going on.
+    fn git_auto_tick(&mut self, ctx: &egui::Context) {
+        if self.git_running || !self.project.join(".git").exists() {
+            return;
+        }
+        let settle = Duration::from_secs(3);
+        if let Some(saved) = self.git_push_due {
+            if !self.git_cfg.auto_push {
+                self.git_push_due = None;
+            } else if self.dirty.is_some() || saved.elapsed() < settle {
+                ctx.request_repaint_after(settle);
+            } else {
+                self.git_push_due = None;
+                self.run_git("push", true, ctx);
+            }
+            return;
+        }
+        if !self.git_cfg.auto_pull {
+            return;
+        }
+        let every = Duration::from_secs(60 * self.git_cfg.pull_minutes.clamp(1, 60) as u64);
+        let due = self.git_last_pull.is_none_or(|at| at.elapsed() >= every);
+        // The pull reloads the collection, so it only runs while nothing is half edited.
+        let idle = self.dirty.is_none()
+            && self.drafts.is_empty()
+            && !self.pending_structural()
+            && self.unsaved_count() == 0;
+        if due && idle {
+            self.git_last_pull = Some(Instant::now());
+            self.run_git("pull", true, ctx);
+        } else {
+            ctx.request_repaint_after(Duration::from_secs(if due { 5 } else { 30 }));
+        }
     }
     /// Imported JSON bodies arrive as one line; lay them out for reading (key order is kept).
     fn prettify_body(request: &mut Request) {
@@ -2267,33 +2451,23 @@ impl eframe::App for App {
                 Message::UpdateInstalled(Err(why)) => {
                     self.update_state = UpdateState::Failed(why);
                 }
-                Message::Git(result) => {
+                Message::Git { result, auto } => {
                     self.git_running = false;
-                    let reload = result.is_ok();
-                    self.notify(result);
-                    if reload {
-                        match std::fs::read_to_string(self.project.join("collection.json"))
-                            .map_err(|e| e.to_string())
-                            .and_then(|s| collection::import(&s))
-                        {
-                            Ok(c) => {
-                                self.collection = c;
-                                self.preview = None;
-                                self.tabs.retain(|&i| i < self.collection.requests.len());
-                                if let Ok(e) = post_ronda::environment::Environments::load(
-                                    &self.project.join("environments.json"),
-                                ) {
-                                    self.environments = e;
-                                }
-                                self.response_cache.clear();
-                                self.selected = self
-                                    .selected
-                                    .min(self.collection.requests.len().saturating_sub(1));
-                            }
-                            Err(e) => self.notify(Err(format!(
-                                "Git completed, but collection needs attention: {e}"
-                            ))),
+                    let reload = result.as_ref().is_ok_and(|o| o.changed);
+                    // Git reports in the status bar only: no toast, nothing covers the window.
+                    match result {
+                        Ok(outcome) if auto && outcome.message.is_empty() => {}
+                        Ok(outcome) => {
+                            self.notice = outcome.message;
+                            self.error = false;
                         }
+                        Err(e) => {
+                            self.notice = e;
+                            self.error = true;
+                        }
+                    }
+                    if reload {
+                        self.reload_from_disk();
                     }
                 }
             }
@@ -2385,34 +2559,22 @@ impl eframe::App for App {
             }
             capture::tick(&ctx, self.response.is_some());
         }
-        if self.git_running {
-            ui.disable();
-        }
         // While the import dialog is open, Cmd/Ctrl+Enter confirms it instead of sending.
-        if !self.git_running
-            && !self.import_open
+        if !self.import_open
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter))
         {
             self.send(&ctx);
         }
-        if !self.git_running
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
-        {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
             self.save_request();
         }
-        if !self.git_running
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N))
-        {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
             self.new_request();
         }
-        if !self.git_running
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::I))
-        {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::I)) {
             self.open_import(false);
         }
-        if !self.git_running
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E))
-        {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::E)) {
             self.settings = false;
             self.page = 2;
         }
@@ -2449,9 +2611,7 @@ impl eframe::App for App {
             ctx.copy_text(selected);
             self.notify(Ok("Copied to clipboard!".into()));
         }
-        if !self.git_running
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W))
-        {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
             self.close_tab(self.selected);
         }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
@@ -2463,6 +2623,7 @@ impl eframe::App for App {
             self.begin_new_project(Some(next));
             self.np_notes = notes;
         }
+        self.git_auto_tick(&ctx);
         self.draw_shell(ui);
         self.drop_overlay(&ctx);
     }
@@ -2484,6 +2645,13 @@ impl eframe::App for App {
 fn history_file(project: &std::path::Path) -> PathBuf {
     state_dir()
         .join("history")
+        .join(format!("{}.json", project_key(project)))
+}
+/// The Git login and automatic sync chosen for a project. Outside the project folder: it holds
+/// a token, and the folder is what gets committed.
+fn git_settings_file(project: &std::path::Path) -> PathBuf {
+    state_dir()
+        .join("git")
         .join(format!("{}.json", project_key(project)))
 }
 /// Short stable name for a project folder, used for the app-side files kept per project.
@@ -2530,154 +2698,4 @@ fn git_branch(project: &std::path::Path) -> Option<String> {
         Some(branch) => branch.to_owned(),
         None => head.chars().take(7).collect(),
     })
-}
-/// The `origin` URL of the project's own repository, or empty when it has none.
-fn origin_of(project: &std::path::Path) -> String {
-    post_ronda::process::command("git")
-        .current_dir(project)
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-        .unwrap_or_default()
-}
-fn git_action(project: &std::path::Path, action: &str, remote: &str) -> Result<String, String> {
-    let run = |args: &[&str]| -> Result<String, String> {
-        let out = post_ronda::process::command("git")
-            .current_dir(project)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .args(args)
-            .output()
-            .map_err(|e| format!("Git: {e}"))?;
-        if out.status.success() {
-            Ok(format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            )
-            .trim()
-            .into())
-        } else {
-            Err(format!(
-                "Git: {}{}",
-                String::from_utf8_lossy(&out.stderr),
-                String::from_utf8_lossy(&out.stdout)
-            )
-            .trim()
-            .into())
-        }
-    };
-    if action != "init" && !project.join(".git").exists() {
-        return Err("Initialize Git in this project first.".into());
-    }
-    match action {
-        "init" => {
-            if !project.join(".git").exists() {
-                run(&["init", "-b", "main"])?;
-            }
-            Ok("Git initialized. Configure origin in Settings.".into())
-        }
-        "remote" => {
-            if remote.trim().is_empty() || remote.starts_with('-') {
-                return Err("Enter a Git remote URL".into());
-            }
-            if run(&["remote", "get-url", "origin"]).is_ok() {
-                run(&["remote", "set-url", "origin", remote])?;
-            } else {
-                run(&["remote", "add", "origin", remote])?;
-            }
-            Ok("Git origin configured".into())
-        }
-        "pull" => {
-            if !run(&["status", "--porcelain"])?.is_empty() {
-                return Err("Save and commit local changes before Pull. Use Push to commit and upload, or commit in your terminal.".into());
-            }
-            run(&["pull", "--ff-only"])?;
-            Ok("Pulled latest collection".into())
-        }
-        "push" => {
-            let mut files = vec!["add", "--", "collection.json"];
-            if project.join("environments.json").exists() {
-                files.push("environments.json");
-            }
-            run(&files)?;
-            let diff = run(&["diff", "--cached", "--name-only"])?;
-            if diff
-                .lines()
-                .any(|s| s != "collection.json" && s != "environments.json")
-            {
-                return Err(
-                    "Other files are staged. Commit them in your terminal before using Push."
-                        .into(),
-                );
-            }
-            if !diff.is_empty() {
-                run(&["commit", "-m", "Update API collection"])?;
-            }
-            run(&["push", "--set-upstream", "origin", "HEAD"])?;
-            Ok("Collection pushed".into())
-        }
-        _ => Err("Unknown Git action".into()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn git_roundtrip_and_dirty_pull_guard() {
-        let root = tempfile::tempdir().unwrap();
-        let origin = root.path().join("origin.git");
-        let project = root.path().join("project");
-        std::fs::create_dir(&project).unwrap();
-        let output = std::process::Command::new("git")
-            .args(["init", "--bare", "-b", "main"])
-            .arg(&origin)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        git_action(&project, "init", "").unwrap();
-        for (key, val) in [
-            ("user.name", "Post Ronda Test"),
-            ("user.email", "test@postronda.invalid"),
-        ] {
-            assert!(
-                std::process::Command::new("git")
-                    .current_dir(&project)
-                    .args(["config", key, val])
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        }
-        std::fs::write(project.join("collection.json"), "{}").unwrap();
-        std::fs::write(
-            project.join("environments.json"),
-            "{\"active\":null,\"items\":[]}",
-        )
-        .unwrap();
-        assert_eq!(origin_of(&project), "");
-        git_action(&project, "remote", origin.to_str().unwrap()).unwrap();
-        assert_eq!(origin_of(&project), origin.to_str().unwrap());
-        git_action(&project, "push", "").unwrap();
-        git_action(&project, "pull", "").unwrap();
-        std::fs::write(project.join("collection.json"), "{\"changed\":true}").unwrap();
-        assert!(
-            git_action(&project, "pull", "")
-                .unwrap_err()
-                .contains("local changes")
-        );
-        git_action(&project, "push", "").unwrap();
-        let verify = std::process::Command::new("git")
-            .arg("--git-dir")
-            .arg(origin)
-            .args(["show", "HEAD:collection.json"])
-            .output()
-            .unwrap();
-        assert_eq!(
-            String::from_utf8(verify.stdout).unwrap(),
-            "{\"changed\":true}"
-        );
-    }
 }

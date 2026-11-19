@@ -3,6 +3,7 @@ pub mod collection;
 pub mod crashlog;
 pub mod curl;
 pub mod environment;
+pub mod git;
 pub mod html;
 pub mod http;
 pub mod process;
